@@ -246,6 +246,34 @@
           <button type="button" class="f" data-role="f"><svg><use href="#i-heart"/></svg>Девушка</button>
         </div>
       </div>
+      <div class="field"><span>Тема</span>
+        <div class="theme-switch" id="themeSwitch" role="radiogroup" aria-label="Тема">
+          <button type="button" role="radio" data-theme-key="system"><svg><use href="#i-theme-auto"/></svg><span>Как в системе</span></button>
+          <button type="button" role="radio" data-theme-key="light"><svg><use href="#i-sun"/></svg><span>Светлая</span></button>
+          <button type="button" role="radio" data-theme-key="dark"><svg><use href="#i-moon"/></svg><span>Тёмная</span></button>
+        </div>
+      </div>
+      <div class="field"><span>Шрифт</span>
+        <div class="font-switch" id="fontSwitch">
+          <button type="button" data-font="playful"><b style="font-family: 'Montserrat Alternates', sans-serif">Игриво</b><small>Montserrat Alternates</small></button>
+          <button type="button" data-font="fresh"><b style="font-family: 'Geologica', sans-serif">Свежо</b><small>Geologica + Onest</small></button>
+        </div>
+      </div>
+      <!-- Сервер: адрес, проверка и создание — в отдельном окне -->
+      <button type="button" class="server-row" data-action="server" aria-describedby="serverHint">
+        <span class="ic"><svg><use href="#i-cloud"/></svg></span><span class="lbl">Сервер</span>
+        <span class="hint" id="serverHint"><i class="dot"></i><span class="v"></span></span><svg class="go"><use href="#i-right"/></svg>
+      </button>
+    </form>
+  </dialog>
+
+  <!-- Сервер -->
+  <dialog class="sheet" id="serverDialog" aria-labelledby="serverTitle">
+    <form method="dialog" class="sheet-inner" tabindex="-1" autofocus id="serverForm" autocomplete="off">
+      <div class="sheet-head">
+        <h2 id="serverTitle">Сервер</h2>
+        <button type="button" class="icon-btn ghost" data-action="close-dialog" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button>
+      </div>
       <label class="field"><span>Адрес сервера</span>
         <input name="apiUrl" type="url" inputmode="url" placeholder="https://markets-pars.имя.workers.dev">
       </label>
@@ -266,20 +294,6 @@
           <a class="btn cf" id="deployLink" target="_blank" rel="noopener"><svg><use href="#i-cloud"/></svg><span>Развернуть на Cloudflare</span></a>
         </div></div>
       </div>
-      <div class="field"><span>Тема</span>
-        <div class="theme-switch" id="themeSwitch" role="radiogroup" aria-label="Тема">
-          <button type="button" role="radio" data-theme-key="system"><svg><use href="#i-theme-auto"/></svg><span>Как в системе</span></button>
-          <button type="button" role="radio" data-theme-key="light"><svg><use href="#i-sun"/></svg><span>Светлая</span></button>
-          <button type="button" role="radio" data-theme-key="dark"><svg><use href="#i-moon"/></svg><span>Тёмная</span></button>
-        </div>
-      </div>
-      <div class="field"><span>Шрифт</span>
-        <div class="font-switch" id="fontSwitch">
-          <button type="button" data-font="playful"><b style="font-family: 'Montserrat Alternates', sans-serif">Игриво</b><small>Montserrat Alternates</small></button>
-          <button type="button" data-font="fresh"><b style="font-family: 'Geologica', sans-serif">Свежо</b><small>Geologica + Onest</small></button>
-        </div>
-      </div>
-
       <div class="row">
         <button type="submit" class="btn primary grow" value="save">Сохранить</button>
       </div>

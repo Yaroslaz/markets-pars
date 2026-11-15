@@ -2,7 +2,11 @@
   --bg: #f3f3f6;
   --surface: #ffffff;
   --surface-2: #eeeef2;
-  --island: rgba(255, 255, 255, 0.94);
+  /* Плавающие элементы (шапка, таб-бар, островки, меню): сплошная поверхность, которая явно отличается
+     от фона страницы, и многослойная тень — без обводок */
+  --chrome: #ffffff;
+  --chrome-shadow: 0 10px 28px rgba(24, 24, 48, 0.14), 0 3px 8px rgba(24, 24, 48, 0.08), 0 1px 2px rgba(24, 24, 48, 0.06);
+  --island: var(--chrome);
   --text: #16161a;
   --muted: #74747f;
   --line: rgba(20, 20, 30, 0.08);
@@ -18,7 +22,7 @@
   --danger: #e5484d;
   --radius: 16px;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 3px 12px rgba(0, 0, 0, 0.05);
-  --shadow-island: 0 6px 24px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --shadow-island: var(--chrome-shadow);
   --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.18);
   /* Отступы от системных панелей: вырезы iPhone (env) или размеры панелей, которые передаёт
      приложение для Android, когда рисует сайт под ними (--native-safe-*) */
@@ -38,14 +42,16 @@
     --bg: #0f0f12;
     --surface: #1b1b20;
     --surface-2: #26262d;
-    --island: rgba(30, 30, 36, 0.94);
+    --chrome: #2a2a31;
+    --chrome-shadow: 0 14px 34px rgba(0, 0, 0, 0.62), 0 4px 10px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.4);
+    --island: var(--chrome);
     --text: #f2f2f5;
     --muted: #9a9aa6;
     --line: rgba(255, 255, 255, 0.08);
     --accent: #f2f2f5;
     --accent-text: #111114;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --shadow-island: 0 8px 28px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
+    --shadow-island: var(--chrome-shadow);
     --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.5);
     color-scheme: dark;
   }
@@ -54,14 +60,16 @@
   --bg: #0f0f12;
   --surface: #1b1b20;
   --surface-2: #26262d;
-  --island: rgba(30, 30, 36, 0.94);
+  --chrome: #2a2a31;
+  --chrome-shadow: 0 14px 34px rgba(0, 0, 0, 0.62), 0 4px 10px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --island: var(--chrome);
   --text: #f2f2f5;
   --muted: #9a9aa6;
   --line: rgba(255, 255, 255, 0.08);
   --accent: #f2f2f5;
   --accent-text: #111114;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-island: 0 8px 28px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-island: var(--chrome-shadow);
   --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.5);
   color-scheme: dark;
 }
@@ -117,9 +125,8 @@ svg { width: 20px; height: 20px; flex: none; }
 
 /* ---------- Островки ---------- */
 .island {
-  background: var(--island);
-  backdrop-filter: saturate(1.8) blur(20px); -webkit-backdrop-filter: saturate(1.8) blur(20px);
-  box-shadow: var(--shadow-island);
+  background: var(--chrome); color: var(--text);
+  box-shadow: var(--chrome-shadow);
 }
 
 /* Верхние островки: фильтр и «поделиться» */
@@ -142,7 +149,7 @@ svg { width: 20px; height: 20px; flex: none; }
 }
 .board-btn .v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .board-btn > svg { width: 19px; height: 19px; }
-.board-btn .chev { margin-left: auto; color: var(--muted); }
+.board-btn .chev { margin-left: auto; color: var(--text); opacity: .7; }
 .dd-btn .chev { margin-left: auto; }
 
 /* ---------- Дропдаун фильтров ---------- */
@@ -158,7 +165,7 @@ svg { width: 20px; height: 20px; flex: none; }
 .dd.open .dd-btn .chev { transform: rotate(180deg); }
 .dd-menu {
   position: absolute; top: calc(100% + 8px); left: 0; z-index: 40; width: min(280px, calc(100vw - 20px)); padding: 6px;
-  background: var(--surface); border-radius: 16px; box-shadow: var(--shadow-lg);
+  background: var(--chrome); border-radius: 16px; box-shadow: var(--chrome-shadow);
   opacity: 0; transform: translateY(-4px) scale(.98); transform-origin: top left; pointer-events: none;
   transition: opacity .15s ease, transform .15s ease;
   max-height: calc(100dvh - 90px); overflow: auto;
@@ -287,9 +294,9 @@ main { padding: 0 calc(var(--safe-r) + 10px) calc(var(--dock-h) + var(--safe-b) 
   display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border-radius: 18px; border: 0;
   font: inherit; font-size: 13px; color: var(--text); max-width: 100%; white-space: nowrap; --press: .96;
 }
-.sumbar svg { width: 16px; height: 16px; color: color-mix(in srgb, var(--text) 70%, transparent); }
+.sumbar svg { width: 16px; height: 16px; color: var(--text); }
 .sumbar svg.duo { width: 22px; height: 19px; }
-.sumbar .cnt { color: color-mix(in srgb, var(--text) 78%, transparent); overflow: hidden; text-overflow: ellipsis; }
+.sumbar .cnt { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
 .sumbar b { font-weight: 700; font-variant-numeric: tabular-nums; }
 .sumbar .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--muted); flex: none; }
 /* Метка «есть что обновить» / ход обновления «3 из 12» */
@@ -313,16 +320,16 @@ main { padding: 0 calc(var(--safe-r) + 10px) calc(var(--dock-h) + var(--safe-b) 
 }
 .tab {
   border: 0; background: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
-  color: var(--muted); min-width: 0; border-radius: 16px; margin: 5px 0;
+  color: var(--text); min-width: 0; border-radius: 16px; margin: 5px 0;
 }
-.tab.active { color: var(--text); background: color-mix(in srgb, var(--text) 7%, transparent); }
+.tab.active { color: var(--text); background: color-mix(in srgb, var(--text) 10%, transparent); }
 .tab svg { width: 26px; height: 26px; }
 .duo-heart { width: 28px; height: 24px; transition: transform .2s cubic-bezier(.3, 1.6, .5, 1); }
-.tab .duo-heart { width: 38px; height: 32px; opacity: .55; filter: saturate(.6); }
+.tab .duo-heart { width: 38px; height: 32px; opacity: .8; filter: saturate(.8); }
 .tab.active .duo-heart { opacity: 1; filter: none; }
 .fab {
   width: 54px; height: 54px; border-radius: 20px; border: 0; flex: none; display: grid; place-items: center;
-  color: #fff; box-shadow: 0 8px 22px rgba(170, 110, 255, .30), 0 2px 6px rgba(0, 0, 0, .15);
+  color: #fff; box-shadow: 0 10px 26px rgba(150, 100, 255, .38), 0 3px 8px rgba(0, 0, 0, .2);
   /* мягкий блик сверху + плавный градиент близких оттенков, медленно плывёт */
   background:
     radial-gradient(120% 90% at 30% 15%, rgba(255, 255, 255, .22), transparent 60%),
@@ -345,6 +352,10 @@ dialog { border: 0; padding: 0; color: var(--text); background: transparent; max
 dialog::backdrop { background: rgba(0, 0, 0, .5); }
 dialog[open] { animation: rise .25s cubic-bezier(.2, .9, .3, 1) both; }
 @keyframes rise { from { transform: translateY(24px); opacity: 0; } }
+/* Карточка и лайтбокс на весь экран: без «вспышки» — карточка выезжает, почти не прозрачная; лайтбокс проявляется */
+.viewer[open] { animation: viewer-in .26s cubic-bezier(.2, .9, .3, 1) both; }
+@keyframes viewer-in { from { transform: translateY(32px); opacity: .5; } }
+.lightbox[open] { animation: fade .2s ease both; }
 
 .sheet { width: 100%; margin: auto auto 0; }
 .sheet-inner {
@@ -434,10 +445,13 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .viewer-inner::-webkit-scrollbar { display: none; }
 .gallery { background: var(--surface-2); flex: none; }
 .stage { position: relative; }
-.track { display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; scrollbar-width: none; height: min(54dvh, 560px); width: 100%; }
+/* Сцена фото — постоянной высоты (без dvh в старых WebView — по vh), фото всегда по центру */
+.track { display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; scrollbar-width: none; height: min(54vh, 560px); height: min(54dvh, 560px); width: 100%; }
 .track::-webkit-scrollbar { display: none; }
-.track .slide { flex: 0 0 100%; height: 100%; scroll-snap-align: center; display: flex; align-items: center; justify-content: center; position: relative; }
-.track img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; cursor: zoom-in; display: block; }
+.track .slide { flex: 0 0 100%; height: 100%; min-height: 0; scroll-snap-align: center; display: grid; place-items: center; position: relative; overflow: hidden; }
+/* Рамка картинки занимает весь слайд, а само фото вписывается и центрируется внутри неё —
+   так широкое фото не «прилипает» к верху, как бы WebView ни считал проценты и пока фото грузится */
+.track img { width: 100%; height: 100%; object-fit: contain; object-position: center; cursor: zoom-in; display: block; }
 .gallery .nav { position: absolute; top: 50%; transform: translateY(-50%); box-shadow: var(--shadow); display: none; background: var(--surface); }
 .gallery .nav.prev { left: 12px; } .gallery .nav.next { right: 12px; }
 .gallery .counter {
@@ -537,6 +551,20 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .font-switch b { font-size: 17px; font-weight: 700; }
 .font-switch small { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .font-switch button.active { box-shadow: inset 0 0 0 2px var(--text); }
+/* Строка «Сервер» в настройках: открывает окно сервера, справа — короткое состояние */
+.server-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; height: 52px; padding: 0 12px 0 10px;
+  border: 0; border-radius: 14px; background: var(--surface-2); color: var(--text); text-align: left; --press: .98;
+}
+.server-row .ic { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; background: var(--surface); color: #f38020; flex: none; }
+.server-row .ic svg { width: 18px; height: 18px; }
+.server-row .lbl { font-weight: 600; font-size: 15px; flex: none; }
+.server-row .hint { margin-left: auto; min-width: 0; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+.server-row .hint .v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server-row .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.server-row .hint[data-status="ok"] .dot { background: var(--ok); }
+.server-row .hint[data-status="err"] .dot, .server-row .hint[data-status="none"] .dot { background: var(--danger); }
+.server-row .go { width: 18px; height: 18px; color: var(--muted); flex: none; }
 
 /* ---------- Выбор роли ---------- */
 .role { width: min(400px, calc(100% - 28px)); margin: auto; }
@@ -570,10 +598,11 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
   background: var(--accent); color: var(--accent-text); border-radius: 0 0 14px 14px;
   padding: 12px calc(var(--safe-r) + 16px) 12px calc(var(--safe-l) + 16px);
   font-size: 14px; line-height: 1.35; font-weight: 500; text-align: center; text-wrap: balance;
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere;
+  display: block; overflow-wrap: anywhere;
   opacity: 0; pointer-events: none; transition: opacity .25s ease, transform .25s ease; box-shadow: var(--shadow-lg);
 }
 .toast.show { opacity: 1; transform: none; }
+.toast .tx { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 @media (max-width: 359px) { .toast { font-size: 13px; } }
 
 /* ---------- Узкие экраны ---------- */
@@ -622,17 +651,23 @@ button, a, input, label, select, textarea, summary, .card, [role="button"] { tou
 .icon-btn, .vote, .fab, .thumbs button { --press: .9; }
 .dd-opt, .board-pick, .acc-head { --press: .98; }
 .btn, .icon-btn, .tab, .fab, .vote, .dd-opt, .dd-btn, .board-btn, .board-pick, .role-opt, .role-switch button,
-.theme-switch button, .font-switch button, .acc-head, .sumbar, .thumbs button, .share-targets a, .tool, .card {
+.theme-switch button, .font-switch button, .acc-head, .sumbar, .server-row, .thumbs button, .share-targets a, .tool, .card {
   /* отпускание — пружиной, нажатие — быстро (длительность меняет .pressed) */
   transition: scale var(--press-t, .38s) var(--press-ease, var(--spring)), transform .15s ease, background-color .15s ease,
     color .15s ease, opacity .15s ease, box-shadow .2s ease, filter .15s ease;
   -webkit-touch-callout: none;
 }
-:is(.btn, .icon-btn, .tab, .fab, .vote.own, .dd-opt, .dd-btn, .board-btn, .board-pick, .role-opt, .role-switch button,
-.theme-switch button, .font-switch button, .acc-head, .sumbar, .thumbs button, .share-targets a, .tool):active:not(:disabled),
+/* На касание отклик даёт только класс .pressed (из app.js), :active — лишь для мыши, чтобы два источника не спорили */
 .pressed {
   scale: var(--press, .96);
   --press-t: .08s; --press-ease: ease-out;
+}
+@media (hover: hover) and (pointer: fine) {
+  :is(.btn, .icon-btn, .tab, .fab, .vote.own, .dd-opt, .dd-btn, .board-btn, .board-pick, .role-opt, .role-switch button,
+  .theme-switch button, .font-switch button, .acc-head, .sumbar, .server-row, .thumbs button, .share-targets a, .tool):active:not(:disabled) {
+    scale: var(--press, .96);
+    --press-t: .08s; --press-ease: ease-out;
+  }
 }
 .vote.other.pressed { scale: none; }
 /* Наведение — только там, где есть мышь: на телефоне подсветка не «залипает» после тапа */
@@ -665,7 +700,7 @@ button, a, input, label, select, textarea, summary, .card, [role="button"] { tou
    после порога или при отпускании — одна мягкая пружинная «посадка» обратно */
 .card.holding { scale: .95; --press-t: .41s; --press-ease: cubic-bezier(.33, 0, .67, 1); }
 /* Отмена прокруткой — быстрый возврат без отскока */
-.card.unhold { --press-t: .18s; --press-ease: ease-out; }
+.card.unhold { --press-t: .22s; --press-ease: cubic-bezier(.2, .6, .35, 1); }
 .card.leaving { opacity: 0; scale: .9; transition: opacity .18s ease, scale .2s ease; pointer-events: none; }
 .sel-ck {
   position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
@@ -718,14 +753,15 @@ body.selecting .dock-row { display: none; }
    Открытая карточка: плавающие кнопки и смахивание вниз
    ===================================================================== */
 /* Видны на любом фото: полупрозрачная подложка с размытием, тень и тонкое кольцо */
+/* Плавающие кнопки поверх фото — та же «хромовая» поверхность, почти сплошная, с глубокой тенью */
 .float-btn {
   width: 40px; height: 40px; border-radius: 50%; color: var(--text);
-  background: color-mix(in srgb, var(--surface) 72%, transparent);
-  backdrop-filter: blur(12px) saturate(1.6); -webkit-backdrop-filter: blur(12px) saturate(1.6);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, .18), 0 0 0 1px color-mix(in srgb, var(--text) 12%, transparent);
+  background: color-mix(in srgb, var(--chrome) 94%, transparent);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  box-shadow: var(--chrome-shadow);
 }
 .float-btn svg { width: 20px; height: 20px; }
-.lb-close.float-btn { color: #fff; background: rgba(28, 28, 32, .55); box-shadow: 0 2px 8px rgba(0, 0, 0, .3), 0 0 0 1px rgba(255, 255, 255, .16); }
+.lb-close.float-btn { color: #fff; background: #2a2a31; box-shadow: 0 6px 18px rgba(0, 0, 0, .6); }
 @property --drag { syntax: '<number>'; inherits: true; initial-value: 0; }
 .viewer::backdrop { background: rgb(0 0 0 / calc(.5 - var(--drag, 0) * .5)); }
 .viewer.dragging .viewer-inner { overflow: hidden; }

@@ -226,10 +226,22 @@ function readCache(board = state.board) {
   }
 }
 
+// Свои голоса последних секунд: ответ сервера, запрошенный ещё до нажатия (например, загрузка при старте,
+// пока карточки уже видны из кеша), не должен откатывать только что поставленное сердце
+const recentVotes = new Map(); // id → { kind, value, at }
+const RECENT_VOTE_MS = 10000;
+
+function keepRecentVote(c) {
+  const v = recentVotes.get(c.id);
+  if (!v) return c;
+  if (Date.now() - v.at > RECENT_VOTE_MS) return recentVotes.delete(c.id), c;
+  return c.likes?.[v.kind] === v.value ? c : { ...c, likes: { ...c.likes, [v.kind]: v.value } };
+}
+
 function applyCards(cards, etag) {
   // не перетираем голос, который пользователь только что нажал
   const pending = new Map(state.cards.filter((c) => c._pending).map((c) => [c.id, c]));
-  state.cards = cards.map((c) => pending.get(c.id) || withUploadedPhoto(c));
+  state.cards = cards.map((c) => pending.get(c.id) || keepRecentVote(withUploadedPhoto(c)));
   state.etag = etag || '';
   state.error = '';
   if (state.booting) (state.booting = false), store.set('booted', '1');
@@ -602,7 +614,7 @@ function renderGrid() {
       <h2>Подключите сервер</h2>
       <p>Карточки и голоса хранятся на вашем бесплатном Cloudflare Worker.</p>
       <div class="row"><a class="btn primary" href="${deployUrl()}" target="_blank" rel="noopener">Создать сервер</a>
-      <button class="btn" data-action="settings">Ввести адрес</button></div>`;
+      <button class="btn" data-action="server">Ввести адрес</button></div>`;
     return;
   }
   // Заготовки — только когда показать действительно нечего (кэш пуст, подборка ещё грузится)
@@ -627,7 +639,7 @@ function renderGrid() {
     empty.hidden = false;
     if (state.error) {
       empty.innerHTML = `<h2>Сервер не отвечает</h2><p>${esc(state.error)}</p>
-        <div class="row"><button class="btn primary" data-action="reload">Повторить</button><button class="btn" data-action="settings">Настройки</button></div>`;
+        <div class="row"><button class="btn primary" data-action="reload">Повторить</button><button class="btn" data-action="server">Сервер</button></div>`;
     } else if (!state.cards.length) {
       empty.innerHTML = `<div class="logo"><svg><use href="#i-heart"/></svg></div><h2>Пока пусто</h2>
         <p>Вставьте ссылки с Ozon, Wildberries, Маркета или AliExpress.</p>
@@ -873,6 +885,7 @@ async function toggleVote(id, kind, btn) {
   try {
     const r = await api(`/api/cards/${id}/vote`, { method: 'POST', body: { kind, value: on } });
     c.likes = r.likes;
+    recentVotes.set(id, { kind, value: !!r.likes?.[kind], at: Date.now() });
   } catch (e) {
     c.likes = prev;
     toast('Голос не сохранился: ' + e.message);
@@ -896,7 +909,7 @@ const addText = $('#addForm textarea');
 const verificationSources = new Set(Object.keys(SOURCES));
 
 function openAdd(prefill) {
-  if (!state.api) return openSettings();
+  if (!state.api) return openServer();
   if (prefill != null) addText.value = prefill;
   $('#progress').hidden = true;
   $('#progress').innerHTML = '';
@@ -1153,10 +1166,12 @@ function refreshViewer(full = false) {
     $('.votes', body).outerHTML = votesHtml(c);
     return;
   }
-  const keepIndex = body.dataset.id === c.id ? currentSlide() : 0;
+  const sameCard = body.dataset.id === c.id;
+  const keepIndex = sameCard ? currentSlide() : 0;
   body.dataset.sig = sig;
   body.dataset.id = c.id;
   const imgs = c.images || [];
+  const gsig = JSON.stringify([imgs, c.thumbs || null]);
   const missing = [!imgs.length && 'фото', c.price == null && 'цены'].filter(Boolean).join(' и ');
   const src = SOURCES[c.source];
   // Кнопки «⋯» и «✕» живут вне прокручиваемого содержимого и всегда остаются на месте
@@ -1175,7 +1190,7 @@ function refreshViewer(full = false) {
           </div>
         </div>
         <button type="button" class="icon-btn float-btn" data-action="close-viewer" aria-label="Закрыть" title="Закрыть"><svg><use href="#i-close"/></svg></button>`;
-  body.innerHTML = `
+  const gallery = `
     <div class="gallery">
       <div class="stage">
       <div class="track" id="track">${
@@ -1190,7 +1205,8 @@ function refreshViewer(full = false) {
       ${imgs.length > 1 ? `<div class="thumbs" id="thumbs">${(c.thumbs?.length === imgs.length ? c.thumbs : imgs)
         .map((u, i) => `<button data-thumb="${i}" class="${i ? '' : 'active'}" aria-label="Фото ${i + 1}"><img ${photoSource(u)} alt="" loading="lazy" referrerpolicy="no-referrer"></button>`)
         .join('')}</div>` : ''}
-    </div>
+    </div>`;
+  const info = `
     <div class="info">
       ${priceHtml(c)}
       ${c.source === 'ozon' && c.priceNoCard > (c.price || 0) ? `<div class="price-alt">без Ozon Банка ${rub(c.priceNoCard)}</div>` : ''}
@@ -1210,6 +1226,13 @@ function refreshViewer(full = false) {
       ${detailsHtml(c)}
       <div class="updated">${c.priceNote ? `Цена ${esc(c.priceNote)} · ` : ''}обновлено ${ago(c.updatedAt)}</div>
     </div>`;
+  // Фото те же — меняем только описание: галерея не перерисовывается, фото не мигают и не грузятся заново
+  if (sameCard && body.dataset.gsig === gsig && $('.gallery', body) && $('.info', body)) {
+    $('.info', body).outerHTML = info;
+    return;
+  }
+  body.dataset.gsig = gsig;
+  body.innerHTML = gallery + info;
   loadPrivatePhotos(body);
   const track = $('#track');
   track.addEventListener('scroll', onTrackScroll, { passive: true });
@@ -1275,10 +1298,9 @@ async function deleteCard(id) {
   if (!ok) return;
   try {
     await api(`/api/cards/${id}`, { method: 'DELETE' });
-    state.cards = state.cards.filter((x) => x.id !== id);
     closeViewer();
-    render();
     toast('Удалено');
+    await dropCards([id]);
   } catch (e) {
     toast(e.message);
   }
@@ -1394,18 +1416,38 @@ function askRole() {
   openDialog(roleDialog);
 }
 
+// Настройки: только роль, тема, шрифт и строка «Сервер»; всё про сервер — в отдельном окне
 function openSettings() {
-  const f = $('#settingsForm');
   $$('#roleSwitch [data-role]').forEach((b) => b.classList.toggle('active', b.dataset.role === state.role));
   markTheme();
   markFont();
   previewFonts();
+  markServer();
+  openDialog(settingsDialog);
+}
+
+// Подсказка в строке «Сервер»: имя хоста и точка состояния (без лишних запросов — по тому, что уже известно)
+function markServer() {
+  const hint = $('#serverHint');
+  let host = '';
+  try {
+    host = state.api ? new URL(state.api).host : '';
+  } catch {}
+  const status = !state.api ? 'none' : state.error ? 'err' : state.unlocked ? 'ok' : 'wait';
+  hint.dataset.status = status;
+  $('.v', hint).textContent = { none: 'не настроен', err: 'нет связи', ok: host || 'подключён', wait: host || 'подключение…' }[status];
+  hint.title = { none: 'Сервер не настроен', err: 'Сервер не отвечает', ok: 'Подключён', wait: 'Подключение' }[status];
+}
+
+const serverDialog = $('#serverDialog');
+function openServer() {
+  const f = $('#serverForm');
   f.apiUrl.value = state.api;
   $('#deployLink').href = deployUrl();
   setSetupOpen(!state.api);
   $('#apiStatus').textContent = '';
   $('#apiStatus').className = 'api-status';
-  openDialog(settingsDialog);
+  openDialog(serverDialog);
 }
 
 function setAccordionOpen(box, open) {
@@ -1432,11 +1474,12 @@ async function testApi(url) {
 }
 
 function saveSettings() {
-  const f = $('#settingsForm');
+  const f = $('#serverForm');
   const api = normalizeApi(f.apiUrl.value);
   const changed = api !== state.api;
   state.api = api;
   store.set('api_override', api === normalizeApi(CFG.apiUrl) ? '' : api);
+  markServer();
   if (changed) {
     clearPrivatePhotos();
     state.accessToken = store.get('access:' + state.api, '');
@@ -1495,7 +1538,7 @@ function renderBoards() {
 }
 
 function openBoards() {
-  if (!state.api) return openSettings();
+  if (!state.api) return openServer();
   renderBoards();
   $('#boardsForm').boardName.value = '';
   openDialog(boardsDialog);
@@ -1832,11 +1875,23 @@ function animateOut(ids) {
   return new Promise((r) => setTimeout(r, 200));
 }
 
+// Удалённые или перенесённые карточки уходят (сжимаются и гаснут), затем остальные
+// плавно съезжают на освободившиеся места (FLIP: сдвиг через transform, без мигания)
 async function dropCards(ids) {
   await animateOut(ids);
   const gone = new Set(ids);
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const before = reduce ? new Map() : new Map($$('#grid .card').filter((el) => !gone.has(el.dataset.id)).map((el) => [el, el.getBoundingClientRect()]));
   state.cards = state.cards.filter((c) => !gone.has(c.id));
   render();
+  for (const [el, was] of before) {
+    if (!el.isConnected) continue;
+    const now = el.getBoundingClientRect();
+    const dx = was.left - now.left;
+    const dy = was.top - now.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+    el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.2, .8, .2, 1)' });
+  }
 }
 
 const goodsText = (n) => `${n} ${plural(n, 'товар', 'товара', 'товаров')}`;
@@ -1943,15 +1998,17 @@ let pressFired = false;
 let lastPointerType = 'mouse';
 let renderDeferred = false;
 
-// soft — отмена прокруткой: без пружинного отскока
-function cancelPress(soft = false) {
+// Один источник масштаба на карточке — .holding. Отпустили до порога (тап) или начали прокрутку —
+// карточка плавно, одним переходом от текущего масштаба, возвращается к 1 (.unhold, без отскока).
+// settle — сработал порог: возврат обычной пружиной (одна мягкая «посадка»)
+function cancelPress(settle = false) {
   if (!press) return;
   const { card } = press;
   clearTimeout(press.timer);
   clearTimeout(press.holdTimer);
   press = null;
   if (card.classList.contains('holding')) {
-    if (soft === true) {
+    if (settle !== true) {
       card.classList.add('unhold');
       setTimeout(() => card.classList.remove('unhold'), 220);
     }
@@ -1965,7 +2022,7 @@ function cancelPress(soft = false) {
 
 function firePress() {
   const { id } = press;
-  cancelPress();
+  cancelPress(true);
   pressFired = true;
   buzz(10);
   if (state.selecting) toggleSelected(id);
@@ -1974,7 +2031,7 @@ function firePress() {
 
 function bindLongPress(grid) {
   grid.addEventListener('pointerdown', (e) => {
-    cancelPress();
+    if (press) cancelPress();
     if (e.button !== 0 || !e.isPrimary) return;
     const card = !ddSwallowClick && e.target.closest('.card');
     // Сердце всегда голосует, даже если его подержать подольше
@@ -1984,11 +2041,11 @@ function bindLongPress(grid) {
     press.timer = setTimeout(firePress, LONG_PRESS_MS);
   });
   grid.addEventListener('pointermove', (e) => {
-    if (press && e.pointerId === press.pointerId && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) cancelPress(true);
+    if (press && e.pointerId === press.pointerId && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) cancelPress();
   }, { passive: true });
   window.addEventListener('pointerup', () => cancelPress(), { passive: true });
-  window.addEventListener('pointercancel', () => cancelPress(true), { passive: true });
-  window.addEventListener('scroll', () => cancelPress(true), { passive: true });
+  window.addEventListener('pointercancel', () => cancelPress(), { passive: true });
+  window.addEventListener('scroll', () => cancelPress(), { passive: true });
   // Без системного меню и перетаскивания картинок на карточках
   grid.addEventListener('contextmenu', (e) => {
     const card = e.target.closest('.card');
@@ -2020,6 +2077,9 @@ function bindLongPress(grid) {
 // Карточки сюда не входят: их нажатие ведёт долгое нажатие (класс .holding), чтобы два отклика не спорили
 const PRESSABLE = 'button, a.btn, .share-targets a, [role="button"]';
 
+// Снять отклик нажатия (например, когда долгое нажатие на иконке показало подсказку) — без мигания
+let clearPressFeedback = () => {};
+
 function bindPressFeedback() {
   let el = null;
   let since = 0;
@@ -2045,6 +2105,7 @@ function bindPressFeedback() {
     if (left > 0 && t.classList.contains('pressed')) setTimeout(() => t.classList.remove('pressed'), left);
     else t.classList.remove('pressed');
   };
+  clearPressFeedback = () => off(false);
   document.addEventListener('pointerdown', (e) => {
     lastPointerType = e.pointerType;
     pressFired = false;
@@ -2500,6 +2561,8 @@ function bindTooltips() {
     start = { x: e.clientX, y: e.clientY };
     tipTimer = setTimeout(() => {
       tipFired = true;
+      // Это не нажатие, а подсказка: кнопка перестаёт быть «нажатой», масштаб не складывается
+      clearPressFeedback();
       buzz(8);
       showTip(el);
       tipHideTimer = setTimeout(hideTip, 1500);
@@ -2538,7 +2601,8 @@ function bindTooltips() {
 let toastTimer;
 function toast(msg) {
   const t = $('#toast');
-  t.textContent = msg;
+  // Текст — во внутреннем блоке: он ограничен двумя строками, а отступы тоста не «подсматривают» третью
+  t.replaceChildren(Object.assign(document.createElement('span'), { className: 'tx', textContent: msg }));
   // Поверх открытых окон (верхний слой браузера), иначе тост в карточке не виден
   if (typeof t.showPopover === 'function') {
     try {
@@ -2615,6 +2679,8 @@ function bind() {
       }
       case 'settings':
         return openSettings();
+      case 'server':
+        return openServer();
       case 'close-dialog':
         return actEl.closest('dialog')?.close();
       case 'boards':
@@ -2628,7 +2694,7 @@ function bind() {
       case 'delete-board':
         return removeBoard(actEl.closest('[data-board]').dataset.board);
       case 'share-board':
-        if (!state.api) return openSettings();
+        if (!state.api) return openServer();
         return share({ title: 'Выбираем вместе', text: 'Голосуй за товары в нашей подборке', url: boardUrl() });
       case 'reload':
         return state.unlocked ? loadCards() : enterApp();
@@ -2677,7 +2743,7 @@ function bind() {
       case 'toggle-setup':
         return setSetupOpen(!$('#setupBox').classList.contains('open'));
       case 'test-api':
-        return testApi($('#settingsForm').apiUrl.value);
+        return testApi($('#serverForm').apiUrl.value);
       case 'copy-share':
         return copy($('#shareUrl').value);
       case 'toggle-password':
@@ -2753,7 +2819,7 @@ function bind() {
     if (location.hash.startsWith('#card=')) history.replaceState(null, '', location.pathname + location.search);
   });
   viewer.addEventListener('click', (e) => e.target === viewer && closeViewer());
-  for (const d of [addDialog, editDialog, settingsDialog, $('#shareDialog'), $('#boardsDialog'), moveDialog, confirmBox])
+  for (const d of [addDialog, editDialog, settingsDialog, serverDialog, $('#shareDialog'), $('#boardsDialog'), moveDialog, confirmBox])
     d.addEventListener('click', (e) => e.target === d && d.close());
   // Окно закрылось чем угодно (✕, Escape, тап мимо, отправка формы) — убираем его слой из истории «Назад»
   for (const d of $$('dialog')) d.addEventListener('close', () => popLayer(d));
@@ -2795,7 +2861,7 @@ function bind() {
   $('#editForm').addEventListener('submit', (e) => {
     if (e.submitter?.value === 'save') saveEdit();
   });
-  $('#settingsForm').addEventListener('submit', (e) => {
+  $('#serverForm').addEventListener('submit', (e) => {
     if (e.submitter?.value === 'save') saveSettings();
   });
 
