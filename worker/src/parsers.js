@@ -1,5 +1,7 @@
 // Парсеры маркетплейсов. Каждый возвращает нормализованный объект товара:
 // { source, productId, url, title, brand, price, oldPrice, priceNote, rating, reviews, images[], thumbs[], partial }
+// и, если нашлись: priceNoCard (цена Ozon без скидки банка), description, specs [{ name, value }],
+// variants [{ kind, values: [{ label, selected?, url? }] }], reviewsTop [{ text, rating?, author? }]
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
@@ -196,21 +198,38 @@ async function parseWb(url) {
     partial: !images.length,
   };
 
-  const [detail, feedbacks, history] = await Promise.all([
+  const description = cleanText(card.description, 2000);
+  if (description) result.description = description;
+  const specs = cleanSpecs(card.options);
+  if (specs) result.specs = specs;
+
+  const [detail, feedbacks, history, colors] = await Promise.all([
     wbDetail(nm).catch(() => null),
     wbFeedbacks(card.imt_id).catch(() => null),
     fetch(`${base}/info/price-history.json`, { headers: HEADERS })
       .then((r) => (r.ok ? r.json() : null))
       .catch(() => null),
+    wbColors(nm, card).catch(() => null),
   ]);
+  const variants = cleanVariants([colors, wbSizes(card)].filter(Boolean),
+    (link) => (/^https:\/\/www\.wildberries\.ru\/catalog\/\d+\/detail\.aspx$/.test(link) ? link : null));
+  if (variants) result.variants = variants;
 
   if (detail) {
     Object.assign(result, detail);
   } else if (Array.isArray(history) && history.length) {
+    // История цен обновляется редко (точки раз в неделю, а то и реже) и бывает совсем мимо:
+    // у товара за 615 ₽ последняя точка была 18 ₽ двухмесячной давности. Берём только свежую точку,
+    // иначе оставляем цену пустой — при обновлении карточки сохранится прежняя.
     const last = history[history.length - 1];
-    result.price = Math.round((last?.price?.RUB || 0) / 100) || null;
-    result.priceNote = 'по истории цен';
+    const ageDays = (Date.now() / 1000 - Number(last?.dt)) / 86400;
+    const price = Math.round((last?.price?.RUB || 0) / 100) || null;
+    if (price && ageDays >= 0 && ageDays <= 10) {
+      result.price = price;
+      result.priceNote = 'по истории цен';
+    }
   }
+  result.partial = result.price == null || !images.length;
   if (feedbacks) {
     if (result.rating == null) result.rating = feedbacks.rating;
     if (result.reviews == null) result.reviews = feedbacks.reviews;
@@ -219,6 +238,8 @@ async function parseWb(url) {
 }
 
 // Актуальная цена из API карточки (может отдавать 403 из-за защиты — тогда берём историю цен).
+// sizes[].price.product — обычная цена на сайте (чёрная, «без кошелька»), basic — зачёркнутая.
+// Крупная красная цена «с WB Кошельком» (≈ −3%) считается на сайте и зависит от покупателя — её не угадываем.
 async function wbDetail(nm) {
   const res = await fetch(
     `https://card.wb.ru/cards/v4/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm=${nm}`,
@@ -237,6 +258,39 @@ async function wbDetail(nm) {
     rating: p.reviewRating ?? p.rating ?? null,
     reviews: p.feedbacks ?? null,
   };
+}
+
+// Цвета: текущий цвет из nm_colors_names, остальные — из card.json соседних артикулов (не больше 8 запросов,
+// только по угаданному хосту CDN, чтобы не тратить лимит подзапросов воркера).
+async function wbColors(nm, card) {
+  const current = cleanText(card?.nm_colors_names, 120);
+  const others = [...new Set([].concat(card?.colors || []).map(Number))]
+    .filter((other) => Number.isSafeInteger(other) && other > 0 && other !== nm).slice(0, 8);
+  const names = await Promise.all(others.map(async (other) => {
+    const vol = Math.floor(other / 1e5);
+    const res = await fetch(`${wbHost(wbBasketGuess(vol))}/vol${vol}/part${Math.floor(other / 1e3)}/${other}/info/ru/card.json`,
+      { headers: HEADERS, signal: AbortSignal.timeout(4000) }).catch(() => null);
+    const json = res?.ok ? await res.json().catch(() => null) : null;
+    return { label: json?.nm_colors_names, url: `https://www.wildberries.ru/catalog/${other}/detail.aspx` };
+  }));
+  const values = [
+    ...(current ? [{ label: current, selected: true, url: `https://www.wildberries.ru/catalog/${nm}/detail.aspx` }] : []),
+    ...names,
+  ];
+  return values.length ? { kind: 'Цвет', values } : null;
+}
+
+// Размеры из таблицы размеров card.json: «48 (M)» — российский размер и размер продавца
+function wbSizes(card) {
+  const table = card?.sizes_table;
+  const ruColumn = [].concat(table?.details_props || []).findIndex((name) => name === 'RU');
+  const values = [].concat(table?.values || []).flatMap((row) => {
+    const tech = cleanText(row?.tech_size, 40);
+    const ru = ruColumn >= 0 ? cleanText([].concat(row?.details || [])[ruColumn], 40) : '';
+    const label = ru && tech && ru !== tech ? `${ru} (${tech})` : ru || tech;
+    return label && label !== '0' ? [{ label }] : [];
+  });
+  return values.length > 1 ? { kind: 'Размер', values } : null;
 }
 
 // Ответ большой (все отзывы) — не парсим JSON целиком, а вытаскиваем два поля регэкспом.
@@ -286,6 +340,7 @@ async function parseYm(url) {
   const offer = [].concat(product?.offers || [])[0] || {};
   const rating = product?.aggregateRating || {};
   const oldPrice = matchNum(html, /"oldPrice"\s*:\s*\{[^}]*?"value"\s*:\s*"?(\d+)/) || null;
+  // Цена из ld+json совпадает с крупной ценой на странице (с картой Яндекс Пэй)
   const price = num(offer.price ?? offer.lowPrice) ?? rubleAmount(meta.get('product:price:amount'), meta.get('product:price:currency'));
   return {
     ...fallback,
@@ -299,7 +354,18 @@ async function parseYm(url) {
     images: photos,
     thumbs: photos,
     partial: price == null || !photos.length,
+    ...ldExtras(product, ymDescription(html)),
   };
+}
+
+// Описание Маркета лежит в данных виджета: "@card/AboutDescriptionV2":{"…":{"shortDescription":"…"}}
+// (description в ld+json у Маркета рекламный: «купить в интернет-магазине…»)
+function ymDescription(html) {
+  const raw = html.match(/"@card\/AboutDescriptionV2":\{"[^"]+":\{[^{}]*?"shortDescription":"((?:[^"\\]|\\.)*)"/)?.[1];
+  if (!raw) return '';
+  try {
+    return decodeHtml(JSON.parse(`"${raw}"`).replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ''));
+  } catch { return ''; }
 }
 
 // Галерея: "gallery":{"<id>":{"mediaItems":["mi_..",...]}} + "mediaItem":{"mi_..":{"origUrl":"..."}}
@@ -380,10 +446,26 @@ export function productFromBrowser(link, details) {
   const patch = {};
   const title = typeof details.title === 'string' && details.title.trim().slice(0, 300);
   if (title) Object.assign(patch, { title, titleFromBrowser: true, titleFromShare: false });
-  if (typeof details.price === 'number' && Number.isFinite(details.price) &&
-      details.price >= 0 && details.price <= Number.MAX_SAFE_INTEGER) {
+  const money = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
+  if (money(details.price)) {
     Object.assign(patch, { price: details.price, priceNote: 'при импорте из браузера' });
+    // Старая (зачёркнутая) цена и цена Ozon без скидки банка — только вместе с ценой и только больше неё
+    if (money(details.oldPrice) && details.oldPrice > details.price) patch.oldPrice = details.oldPrice;
+    if (money(details.priceNoCard) && details.priceNoCard > details.price &&
+        (patch.oldPrice == null || details.priceNoCard < patch.oldPrice)) patch.priceNoCard = details.priceNoCard;
   }
+  if (typeof details.rating === 'number' && details.rating > 0 && details.rating <= 5) {
+    patch.rating = Math.round(details.rating * 10) / 10;
+  }
+  if (Number.isSafeInteger(details.reviews) && details.reviews >= 0) patch.reviews = details.reviews;
+  const description = cleanText(details.description, 2000);
+  if (description) patch.description = description;
+  const specs = cleanSpecs(details.specs);
+  if (specs) patch.specs = specs;
+  const variants = cleanVariants(details.variants, (value) => storeProductUrl(value, source, url.href));
+  if (variants) patch.variants = variants;
+  const reviewsTop = cleanReviews(details.reviewsTop);
+  if (reviewsTop) patch.reviewsTop = reviewsTop;
   const images = Array.isArray(details.images) ? uniq(details.images.slice(0, 10).flatMap((value) => {
     if (typeof value !== 'string' || value.length > 800) return [];
     try {
@@ -395,7 +477,7 @@ export function productFromBrowser(link, details) {
     } catch { return []; }
   })) : [];
   if (images.length) Object.assign(patch, { images, thumbs: images });
-  if (!Object.keys(patch).length) throw new HttpError(400, 'В данных из браузера нет названия, цены или фото');
+  if (!patch.title && patch.price == null && !patch.images) throw new HttpError(400, 'В данных из браузера нет названия, цены или фото');
   return { product: mergeBrowserProduct(product, patch), patch };
 }
 
@@ -419,9 +501,14 @@ function imageLinks(values, pageUrl, source) {
   })).slice(0, 30);
 }
 
+// Поля, которых нет в patch (рейтинг, описание, характеристики, варианты…), остаются от прежней карточки
 export function mergeBrowserProduct(product, patch) {
   const result = { ...product, ...patch };
-  if (patch.price != null && patch.price !== product.price) result.oldPrice = null;
+  // Цена сменилась, а старой цены и цены без карты страница не показала — прежние уже не про эту цену
+  if (patch.price != null && patch.price !== product.price) {
+    if (patch.oldPrice === undefined) result.oldPrice = null;
+    if (patch.priceNoCard === undefined) delete result.priceNoCard;
+  }
   result.partial = result.price == null || !result.images?.length;
   return result;
 }
@@ -578,24 +665,190 @@ async function tryPlainHtml(url, source, id) {
   const verifiedPhoto = images.length && (sameProduct || gallery.length);
   if (typeof name !== 'string' || !name.trim() || (!product && (otherProduct || (!verifiedPhoto && meta.get('og:type') !== 'product')))) return null;
   const offerPrices = [].concat(product?.offers || []).map((offer) => rubleAmount(offer?.price ?? offer?.lowPrice, offer?.priceCurrency));
-  const price = offerPrices.find((value) => value != null)
+  // У Ozon в ld+json цена «с другими банками»; крупная зелёная цена «с банками» — в состоянии виджета webPrice
+  const states = source === 'ozon' ? ozonStates(html) : {};
+  const shown = ozonStatePrice(states);
+  const price = shown?.price ?? offerPrices.find((value) => value != null)
     ?? rubleAmount(meta.get('product:price:amount'), meta.get('product:price:currency'))
     ?? rubleAmount(meta.get('og:price:amount'), meta.get('og:price:currency'))
     ?? rubleAmount(meta.get('price'), meta.get('pricecurrency'));
-  const rating = pageNumber(product?.aggregateRating?.ratingValue);
-  const reviews = pageNumber(product?.aggregateRating?.reviewCount ?? product?.aggregateRating?.ratingCount);
+  const oldPrice = shown && shown.price === price && shown.oldPrice > price ? shown.oldPrice : null;
+  const priceNoCard = shown && shown.price === price && shown.noCard > price && (!oldPrice || shown.noCard < oldPrice)
+    ? shown.noCard : null;
+  const rating = pageNumber(product?.aggregateRating?.ratingValue ?? states.webReviewProductScore?.totalScore);
+  const reviews = pageNumber(product?.aggregateRating?.reviewCount ?? product?.aggregateRating?.ratingCount ??
+    states.webReviewProductScore?.reviewsCount);
+  const extras = ldExtras(product, '');
+  const specs = cleanSpecs([
+    ...(extras.specs || []),
+    ...ozonStateSpecs(states.webCharacteristics),
+    ...ozonStateSpecs(states.webShortCharacteristics),
+  ]);
+  const variants = cleanVariants([].concat(states.webAspects?.aspects || []).map((aspect) => ({
+    kind: aspect?.aspectName,
+    values: [].concat(aspect?.variants || []).map((variant) => ({
+      label: variant?.data?.searchableText || [].concat(variant?.data?.textRs || []).map((part) => part?.content || '').join(''),
+      selected: variant?.active === true || String(variant?.sku) === id,
+      url: variant?.link,
+    })),
+  })), (link) => storeProductUrl(link, source, pageUrl));
   return {
     title: name.trim(),
     brand: typeof product?.brand === 'object' ? product.brand?.name : product?.brand || null,
     price,
-    oldPrice: null,
+    oldPrice,
     priceNote: null,
     rating: rating > 0 && rating <= 5 ? rating : null,
     reviews: Number.isSafeInteger(reviews) ? reviews : null,
     images,
     thumbs: images,
     partial: price == null || !images.length,
+    ...extras,
+    ...(priceNoCard ? { priceNoCard } : {}),
+    ...(specs ? { specs } : {}),
+    ...(variants ? { variants } : {}),
   };
+}
+
+// Состояния виджетов Ozon из разметки: <div id="state-webPrice-…" data-state='{…}'>
+function ozonStates(html) {
+  const states = {};
+  const names = /\bid="state-(webPrice|webMobPriceCompact|webAspects|webShortCharacteristics|webCharacteristics|webReviewProductScore)-/g;
+  for (const match of html.matchAll(names)) {
+    if (states[match[1]]) continue;
+    const start = html.lastIndexOf('<', match.index);
+    const tag = html.slice(start, start + 300000).match(/^<\w+(?:[^"'<>]|"[^"]*"|'[^']*')*>/)?.[0] || '';
+    const value = tag.match(/\sdata-state=(?:'([^']*)'|"([^"]*)")/);
+    if (!value) continue;
+    try { states[match[1]] = JSON.parse(decodeHtml(value[1] ?? value[2])); } catch {}
+  }
+  return states;
+}
+
+function ozonStatePrice(states) {
+  const web = states.webPrice;
+  if (web && (web.cardPrice || web.price)) {
+    return {
+      price: rubleAmount(web.cardPrice || web.price),
+      oldPrice: web.showOriginalPrice === false ? null : rubleAmount(web.originalPrice),
+      noCard: web.cardPrice ? rubleAmount(web.price) : null,
+    };
+  }
+  const mobile = [].concat(states.webMobPriceCompact?.mainPrice?.price || []);
+  const price = rubleAmount(mobile.find((item) => item?.textStyle === 'PRICE')?.text);
+  return price == null ? null
+    : { price, oldPrice: rubleAmount(mobile.find((item) => item?.textStyle === 'ORIGINAL_PRICE')?.text), noCard: null };
+}
+
+// Характеристики из состояния Ozon: [{ title: { textRs: [{ content }] }, values: [{ text }] }] на любой глубине
+function ozonStateSpecs(state) {
+  const found = [];
+  const nodes = [state];
+  for (let i = 0; nodes.length && i < 3000; i++) {
+    const node = nodes.pop();
+    if (!node || typeof node !== 'object') continue;
+    if (Array.isArray(node.values) && node.title) {
+      const name = typeof node.title === 'string' ? node.title
+        : [].concat(node.title?.textRs || []).map((part) => part?.content || '').join('');
+      found.push({ name, value: node.values.map((part) => part?.text || '').filter(Boolean).join(', ') });
+    } else nodes.push(...Object.values(node).reverse());
+  }
+  return found;
+}
+
+// Описание (кроме рекламных «купить в интернет-магазине…»), характеристики и отзывы из ld+json
+function ldExtras(product, pageDescription) {
+  const advert = /(?:купить|покупайте)[^.]{0,120}(?:интернет-магазин|на ozon|маркете|aliexpress|по выгодн)/i;
+  const description = [product?.description, pageDescription]
+    .map((value) => cleanText(typeof value === 'string' ? decodeHtml(value) : '', 2000))
+    .find((value) => value.length >= 20 && !advert.test(value));
+  const specs = cleanSpecs([].concat(product?.additionalProperty || []));
+  const reviewsTop = cleanReviews([].concat(product?.review || []).map((review) => ({
+    text: review?.reviewBody ?? review?.description,
+    rating: pageNumber(review?.reviewRating?.ratingValue),
+    author: typeof review?.author === 'string' ? review.author : review?.author?.name,
+  })));
+  return {
+    ...(description ? { description } : {}),
+    ...(specs ? { specs } : {}),
+    ...(reviewsTop ? { reviewsTop } : {}),
+  };
+}
+
+/* ---------- Описание, характеристики, варианты, отзывы: очистка и ограничения ---------- */
+
+const cleanText = (value, max) => (typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, max) : '');
+
+function cleanSpecs(list) {
+  if (!Array.isArray(list)) return null;
+  const seen = new Set();
+  const specs = list.slice(0, 200).flatMap((item) => {
+    const name = cleanText(item?.name, 120).replace(/\s*:$/, '');
+    const value = cleanText(typeof item?.value === 'number' ? String(item.value) : item?.value, 120);
+    if (!name || !value || seen.has(name.toLowerCase())) return [];
+    seen.add(name.toLowerCase());
+    return [{ name, value }];
+  }).slice(0, 40);
+  return specs.length ? specs : null;
+}
+
+// toUrl(value) возвращает безопасную ссылку на товар того же магазина или null
+function cleanVariants(list, toUrl) {
+  if (!Array.isArray(list)) return null;
+  const groups = list.slice(0, 20).flatMap((group) => {
+    if (!group || typeof group !== 'object' || !Array.isArray(group.values)) return [];
+    const seen = new Set();
+    const values = group.values.slice(0, 100).flatMap((value) => {
+      const label = cleanText(value?.label, 120);
+      if (!label || seen.has(label.toLowerCase())) return [];
+      seen.add(label.toLowerCase());
+      const item = { label };
+      if (value.selected === true) item.selected = true;
+      const link = typeof value.url === 'string' ? toUrl(value.url) : null;
+      if (link) item.url = link;
+      return [item];
+    }).slice(0, 30);
+    return values.length ? [{ kind: cleanText(group.kind, 40).replace(/\s*:$/, '') || 'Вариант', values }] : [];
+  }).slice(0, 6);
+  return groups.length ? groups : null;
+}
+
+function cleanReviews(list) {
+  if (!Array.isArray(list)) return null;
+  const reviews = list.slice(0, 10).flatMap((review) => {
+    const text = cleanText(review?.text, 300);
+    if (!text) return [];
+    const item = { text };
+    if (typeof review.rating === 'number' && review.rating > 0 && review.rating <= 5) item.rating = Math.round(review.rating * 10) / 10;
+    const author = cleanText(review.author, 60);
+    if (author) item.author = author;
+    return [item];
+  }).slice(0, 3);
+  return reviews.length ? reviews : null;
+}
+
+const BROWSER_PATHS = {
+  ozon: /^\/(?:product\/(?:[^/]+-)?\d{5,}|context\/detail\/id\/\d{5,})\/?$/,
+  ym: /^\/(?:card|product(?:--[^/]+)?)\/(?:[^/]+\/)?\d{5,}\/?$/,
+  ali: /^\/item\/(?:[^/]+\/)?\d{6,}(?:\.html)?\/?$/,
+};
+const STORE_HOSTS = {
+  ozon: /(^|\.)ozon\.(ru|by|kz)$/,
+  ym: /(^|\.)market\.yandex\.(ru|by|kz|com)$/,
+  ali: /(^|\.)aliexpress\.(ru|com|us)$/,
+};
+
+// https-ссылка на страницу товара того же магазина, без параметров; иначе null
+function storeProductUrl(value, source, base) {
+  if (typeof value !== 'string' || !value || value.length > 2000 || !BROWSER_PATHS[source]) return null;
+  try {
+    const link = new URL(value, base);
+    if (link.protocol !== 'https:' || link.username || link.password || !STORE_HOSTS[source].test(link.hostname) ||
+        !BROWSER_PATHS[source].test(link.pathname)) return null;
+    link.search = '';
+    link.hash = '';
+    return link.href.length <= 800 ? link.href : null;
+  } catch { return null; }
 }
 
 function pageMeta(html) {
