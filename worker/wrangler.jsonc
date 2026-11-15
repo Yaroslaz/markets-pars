@@ -4,6 +4,9 @@
   "main": "src/index.js",
   "compatibility_date": "2025-09-01",
   "observability": { "enabled": true },
+  "ratelimits": [
+    { "name": "LOGIN_LIMIT", "namespace_id": "42261115", "simple": { "limit": 10, "period": 60 } }
+  ],
   // База для карточек и голосов. При деплое через кнопку «Deploy to Cloudflare»
   // или `wrangler deploy` она создаётся автоматически — таблицы worker создаёт сам.
   "d1_databases": [

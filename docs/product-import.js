@@ -7,11 +7,13 @@ function copyOpenProduct(prefix) {
   const url = new URL(location.href);
   const ozon = /(^|\.)ozon\.(ru|by|kz)$/.test(url.hostname);
   const ali = /(^|\.)aliexpress\.(ru|com|us)$/.test(url.hostname);
+  const market = /(^|\.)market\.yandex\.(ru|by|kz|com)$/.test(url.hostname);
   const productPath = ozon
     ? /^\/(?:product\/(?:[^/]+-)?\d{5,}|context\/detail\/id\/\d{5,})\/?$/
-    : /^\/item\/(?:[^/]+\/)?\d{6,}(?:\.html)?\/?$/;
-  if (url.protocol !== 'https:' || url.username || url.password || (!ozon && !ali) || !productPath.test(url.pathname)) {
-    alert('Откройте страницу товара Ozon или AliExpress и запустите закладку снова.');
+    : market ? /^\/(?:card|product(?:--[^/]+)?)\/(?:[^/]+\/)?\d{5,}\/?$/
+      : /^\/item\/(?:[^/]+\/)?\d{6,}(?:\.html)?\/?$/;
+  if (url.protocol !== 'https:' || url.username || url.password || (!ozon && !ali && !market) || !productPath.test(url.pathname)) {
+    alert('Откройте страницу товара Ozon, Яндекс Маркета или AliExpress и запустите закладку снова.');
     return;
   }
   url.search = '';
@@ -36,12 +38,34 @@ function copyOpenProduct(prefix) {
     } catch {}
   }
 
-  const gallery = ozon ? document.querySelector('[data-widget="webGallery"]') : null;
-  const priceWidget = ozon ? document.querySelector('[data-widget="webPrice"]') : null;
+  const gallery = document.querySelector(ozon
+    ? '[data-widget*="gallery" i]'
+    : '[data-auto*="gallery" i], [data-zone-name*="gallery" i], [data-testid*="gallery" i]');
+  const priceWidget = document.querySelector(ozon ? '[data-widget="webPrice"]' : '[data-auto="mainPrice"]');
   const heading = document.querySelector('h1')?.innerText;
   const ogImage = meta('og:image', 'og:image:secure_url');
-  const productMeta = meta('og:type') === 'product' || (ali && heading && /\/[^/]+\.alicdn\.com\//.test(ogImage));
-  if (!product && !productMeta && !gallery && !priceWidget) {
+  const imageHosts = ozon ? /(^|\.)ozone\.ru$/ : market
+    ? /^(?:avatars\.mds\.yandex\.(?:net|ru)|avatars\.yandex\.net|[^.]+\.marketpic\.ru)$/
+    : /(^|\.)(alicdn\.com|aliexpress-media\.com)$/;
+  const cleanPhoto = (value) => {
+    if (typeof value !== 'string' || !value) return null;
+    try {
+      const image = new URL(value, url);
+      if (image.protocol !== 'https:' || !imageHosts.test(image.hostname) || image.username || image.password) return null;
+      if (market && !/\/get-(?:mpic|marketpic|marketpicturereading|marketpicplus)\//.test(image.pathname) &&
+          !/\.marketpic\.ru$/.test(image.hostname)) return null;
+      image.search = '';
+      image.hash = '';
+      return image.href.length <= 800 ? image.href : null;
+    } catch { return null; }
+  };
+  const productMeta = meta('og:type') === 'product' || (heading && cleanPhoto(ogImage));
+  const labelledPhotos = heading ? Array.from(document.querySelectorAll('main img[alt]'))
+    .filter((image) => image.alt.trim().toLowerCase() === heading.trim().toLowerCase()) : [];
+  const productImages = [...Array.from(gallery?.querySelectorAll('img') || []), ...labelledPhotos]
+    .flatMap((image) => [image.dataset.src, image.dataset.original, image.currentSrc || image.src])
+    .map(cleanPhoto).filter(Boolean);
+  if (!product && !productMeta && !gallery && !priceWidget && !productImages.length) {
     alert('Данные товара пока не видны. Дождитесь загрузки карточки и пройдите проверку, если её показывает магазин.');
     return;
   }
@@ -63,22 +87,11 @@ function copyOpenProduct(prefix) {
   const price = (visiblePrices.length === 1 ? visiblePrices[0] : null)
     ?? prices.map(([value, currency]) => rubles(value, typeof currency === 'string' ? currency : ''))
       .find(Number.isFinite) ?? null;
-  const imageHosts = ozon ? /(^|\.)ozone\.ru$/ : /(^|\.)(alicdn\.com|aliexpress-media\.com)$/;
   const pictures = [
     ...[].concat(product?.image || []).map((image) => image?.contentUrl || image?.url || image),
     ogImage,
-    ...Array.from(gallery?.querySelectorAll('img') || [], (image) => image.currentSrc || image.src),
   ];
-  const images = [...new Set(pictures.flatMap((value) => {
-    if (typeof value !== 'string' || !value) return [];
-    try {
-      const image = new URL(value, url);
-      if (image.protocol !== 'https:' || !imageHosts.test(image.hostname) || image.username || image.password) return [];
-      image.search = '';
-      image.hash = '';
-      return image.href.length <= 500 ? [image.href] : [];
-    } catch { return []; }
-  }))].slice(0, 10);
+  const images = [...new Set([...pictures.map(cleanPhoto).filter(Boolean), ...productImages])].slice(0, 10);
 
   if (!title && price === null && !images.length) {
     alert('На этой странице не удалось прочитать данные товара.');

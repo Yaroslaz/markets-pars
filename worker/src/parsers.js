@@ -254,49 +254,47 @@ async function parseYm(url) {
   let html = '';
   try {
     const res = await fetch(canonical, { headers: HEADERS, signal: AbortSignal.timeout(6500) });
-    if (res.ok) html = await res.text();
+    if (res.ok && (!res.url || (detectSource(res.url) === 'ym' && ymIdFromUrl(res.url) === id))) html = await res.text();
     else await res.body?.cancel();
   } catch {}
   const product = findLdProduct(html);
+  const meta = pageMeta(html);
+  const slug = new URL(canonical).pathname.split('/')[2];
+  const fallback = partialFromSlug('ym', id, canonical, slug);
+  const ogUrl = meta.get('og:url');
+  const sameProduct = ogUrl && detectSource(ogUrl) === 'ym' && ymIdFromUrl(ogUrl) === id;
+  const photos = imageLinks([ ...ymGallery(html), ...[].concat(product?.image || []), meta.get('og:image'), meta.get('og:image:secure_url') ], canonical)
+    .filter((image) => marketplacePhoto(new URL(image), 'ym'));
 
-  if (!product) {
-    // Капча или блокировка — отдаём частичную карточку
-    return partialFromSlug('ym', id, canonical, new URL(canonical).pathname.split('/')[2]);
-  }
-
-  const images = ymGallery(html);
-  const ldImages = [].concat(product.image || []).map(String);
-  const all = uniq([...images, ...ldImages.map((s) => s.replace(/\/orig$/, '/600x800'))]);
-  const offer = [].concat(product.offers || [])[0] || {};
-  const rating = product.aggregateRating || {};
+  if (!product && (!photos.length || (!sameProduct && meta.get('og:type') !== 'product'))) return fallback;
+  const offer = [].concat(product?.offers || [])[0] || {};
+  const rating = product?.aggregateRating || {};
   const oldPrice = matchNum(html, /"oldPrice"\s*:\s*\{[^}]*?"value"\s*:\s*"?(\d+)/) || null;
-  const price = num(offer.price ?? offer.lowPrice);
+  const price = num(offer.price ?? offer.lowPrice) ?? rubleAmount(meta.get('product:price:amount'), meta.get('product:price:currency'));
   return {
-    source: 'ym',
-    productId: id,
-    url: canonical,
-    title: product.name,
-    brand: typeof product.brand === 'object' ? product.brand?.name : product.brand || null,
+    ...fallback,
+    title: product?.name || meta.get('og:title') || fallback.title,
+    brand: typeof product?.brand === 'object' ? product.brand?.name : product?.brand || null,
     price,
     oldPrice: oldPrice && price && oldPrice > price ? oldPrice : null,
     priceNote: null,
     rating: num(rating.ratingValue),
     reviews: num(rating.reviewCount ?? rating.ratingCount),
-    images: all.map((s) => s.replace(/\/(orig|\d+x\d+)$/, '/600x800')),
-    thumbs: all.map((s) => s.replace(/\/(orig|\d+x\d+)$/, '/450x600')),
-    partial: false,
+    images: photos,
+    thumbs: photos,
+    partial: price == null || !photos.length,
   };
 }
 
 // Галерея: "gallery":{"<id>":{"mediaItems":["mi_..",...]}} + "mediaItem":{"mi_..":{"origUrl":"..."}}
 function ymGallery(html) {
-  const g = html.match(/"gallery":\{"\d+":\{"mediaItems":\[([^\]]*)\]/);
+  const g = html.match(/"gallery"\s*:\s*\{\s*"\d+"\s*:\s*\{\s*"mediaItems"\s*:\s*\[([^\]]*)\]/);
   if (!g) return [];
   const ids = g[1].match(/mi_\d+/g) || [];
   const out = [];
   for (const id of ids.slice(0, 30)) {
-    const m = html.match(new RegExp(`"${id}":\\{[^{}]*?"origUrl":"([^"]+)"`));
-    if (m) out.push(m[1].replace(/\/orig$/, '/600x800'));
+    const m = html.match(new RegExp(`"${id}"\\s*:\\s*\\{[^{}]*?"origUrl"\\s*:\\s*"([^"]+)"`));
+    if (m) out.push(m[1].replace(/\\\//g, '/'));
   }
   return out;
 }
@@ -337,18 +335,20 @@ export function productFromBrowser(link, details) {
   const url = source && new URL(link);
   const ozon = source === 'ozon';
   const ali = source === 'ali' && /(^|\.)aliexpress\.(ru|com|us)$/.test(url.hostname);
+  const market = source === 'ym' && /(^|\.)market\.yandex\.(ru|by|kz|com)$/.test(url.hostname);
   const path = ozon
     ? /^\/(?:product\/(?:[^/]+-)?\d{5,}|context\/detail\/id\/\d{5,})\/?$/
-    : /^\/item\/(?:[^/]+\/)?\d{6,}(?:\.html)?\/?$/;
-  if ((!ozon && !ali) || url.protocol !== 'https:' || url.username || url.password ||
+    : market ? /^\/(?:card|product(?:--[^/]+)?)\/(?:[^/]+\/)?\d{5,}\/?$/
+      : /^\/item\/(?:[^/]+\/)?\d{6,}(?:\.html)?\/?$/;
+  if ((!ozon && !ali && !market) || url.protocol !== 'https:' || url.username || url.password ||
       !path.test(url.pathname) || url.pathname.length > 1000) {
-    throw new HttpError(400, 'Нужна полная ссылка на товар Ozon или AliExpress');
+    throw new HttpError(400, 'Нужна полная ссылка на товар Ozon, Яндекс Маркета или AliExpress');
   }
-  const id = ozon ? ozonId(link) : aliId(link);
+  const id = ozon ? ozonId(link) : market ? ymIdFromUrl(link) : aliId(link);
   if (!id) throw new HttpError(400, 'Не удалось определить товар по ссылке');
   url.search = '';
   url.hash = '';
-  const slug = ozon ? url.pathname.match(/\/product\/([^/]+)/)?.[1] || '' : '';
+  const slug = ozon || market ? url.pathname.split('/')[2] || '' : '';
   const product = partialFromSlug(source, id, url.href, slug);
   const patch = {};
   const title = typeof details.title === 'string' && details.title.trim().slice(0, 300);
@@ -357,12 +357,11 @@ export function productFromBrowser(link, details) {
       details.price >= 0 && details.price <= Number.MAX_SAFE_INTEGER) {
     Object.assign(patch, { price: details.price, priceNote: 'при импорте из браузера' });
   }
-  const imageHosts = ozon ? /(^|\.)ozone\.ru$/ : /(^|\.)(alicdn\.com|aliexpress-media\.com)$/;
   const images = Array.isArray(details.images) ? uniq(details.images.slice(0, 10).flatMap((value) => {
-    if (typeof value !== 'string' || value.length > 500) return [];
+    if (typeof value !== 'string' || value.length > 800) return [];
     try {
       const image = new URL(value);
-      if (image.protocol !== 'https:' || !imageHosts.test(image.hostname) || image.username || image.password) return [];
+      if (image.protocol !== 'https:' || !marketplacePhoto(image, source) || image.username || image.password) return [];
       image.search = '';
       image.hash = '';
       return [image.href];
@@ -371,6 +370,25 @@ export function productFromBrowser(link, details) {
   if (images.length) Object.assign(patch, { images, thumbs: images });
   if (!Object.keys(patch).length) throw new HttpError(400, 'В данных из браузера нет названия, цены или фото');
   return { product: mergeBrowserProduct(product, patch), patch };
+}
+
+function marketplacePhoto(image, source) {
+  if (source === 'ozon') return /(^|\.)ozone\.ru$/.test(image.hostname);
+  if (source === 'ali') return /(^|\.)(alicdn\.com|aliexpress-media\.com)$/.test(image.hostname);
+  return /\.marketpic\.ru$/.test(image.hostname) ||
+    (/^(?:avatars\.mds\.yandex\.(?:net|ru)|avatars\.yandex\.net)$/.test(image.hostname) &&
+     /\/get-(?:mpic|marketpic|marketpicturereading|marketpicplus)\//.test(image.pathname));
+}
+
+function imageLinks(values, pageUrl) {
+  return uniq(values.flatMap((image) => {
+    const value = image?.contentUrl ?? image?.url ?? image;
+    if (typeof value !== 'string' || !value.trim()) return [];
+    try {
+      const link = new URL(value, pageUrl);
+      return link.protocol === 'https:' && !link.username && !link.password ? [link.href] : [];
+    } catch { return []; }
+  })).slice(0, 30);
 }
 
 export function mergeBrowserProduct(product, patch) {
@@ -452,20 +470,14 @@ async function tryPlainHtml(url, source, id) {
     return false;
   });
   const name = product?.name ?? meta.get('og:title');
-  if (typeof name !== 'string' || !name.trim() || (!product && (otherProduct || meta.get('og:type') !== 'product'))) return null;
+  const images = imageLinks([ ...[].concat(product?.image || []), meta.get('og:image'), meta.get('og:image:secure_url') ], pageUrl);
+  const verifiedPhoto = ogId === id && images.some((image) => marketplacePhoto(new URL(image), source));
+  if (typeof name !== 'string' || !name.trim() || (!product && (otherProduct || (!verifiedPhoto && meta.get('og:type') !== 'product')))) return null;
   const offerPrices = [].concat(product?.offers || []).map((offer) => rubleAmount(offer?.price ?? offer?.lowPrice, offer?.priceCurrency));
   const price = offerPrices.find((value) => value != null)
     ?? rubleAmount(meta.get('product:price:amount'), meta.get('product:price:currency'))
     ?? rubleAmount(meta.get('og:price:amount'), meta.get('og:price:currency'))
     ?? rubleAmount(meta.get('price'), meta.get('pricecurrency'));
-  const images = uniq([...[].concat(product?.image || []), meta.get('og:image')].flatMap((image) => {
-    const value = image?.contentUrl ?? image?.url ?? image;
-    if (typeof value !== 'string' || !value.trim()) return [];
-    try {
-      const link = new URL(value, pageUrl);
-      return link.protocol === 'https:' && !link.username && !link.password ? [link.href] : [];
-    } catch { return []; }
-  })).slice(0, 30);
   const rating = pageNumber(product?.aggregateRating?.ratingValue);
   const reviews = pageNumber(product?.aggregateRating?.reviewCount ?? product?.aggregateRating?.ratingCount);
   return {

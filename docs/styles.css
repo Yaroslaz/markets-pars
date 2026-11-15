@@ -326,10 +326,16 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .parse-info b { color: var(--text); }
 .import-help .acc-body > div { display: grid; gap: 10px; justify-items: start; }
 .import-help .acc-ic { color: var(--muted); }
+.import-help .acc-title { display: flex; align-items: center; gap: 8px; }
+.import-help .stores { display: flex; align-items: center; gap: 6px; }
+.import-help .stores .fav { width: 20px; height: 20px; border-radius: 6px; }
 .import-help .hint { line-height: 1.45; }
 .import-help .btn { background: var(--surface); }
 .import-help textarea { background: var(--surface); font-size: 12px; min-height: 0; }
 .import-help [hidden] { display: none; }
+.product-recovery { display: grid; gap: 8px; padding: 10px 12px; background: var(--surface-2); border-radius: 12px; }
+#addForm .product-recovery .row { flex-wrap: wrap; }
+.product-recovery .btn { background: var(--surface); }
 .progress {
   list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px;
   max-height: 220px; overflow: auto; overscroll-behavior: contain; scrollbar-width: none;
@@ -359,7 +365,7 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
   width: 100%; display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 14px; border: 0; background: none;
   font-size: 14px; font-weight: 500; text-align: left;
 }
-.acc-head span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acc-head > span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .acc-ic { color: #f38020; }
 .acc-chev { color: var(--muted); transition: transform .25s ease; }
 .accordion.open .acc-chev { transform: rotate(180deg); }
@@ -486,6 +492,11 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .role { width: min(400px, calc(100% - 28px)); margin: auto; }
 .role-inner { background: var(--surface); border-radius: 24px; padding: 24px 16px 16px; box-shadow: var(--shadow-lg); text-align: center; }
 .role-inner h2 { margin: 0 0 18px; font-size: 21px; }
+.access-form { display: grid; gap: 12px; text-align: start; }
+.access-form h2 { margin: 0; }
+.access-form input { font-size: 16px; }
+.access-status { margin: 0; color: var(--danger); font-size: 13px; }
+.access-status:empty { display: none; }
 .role-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .role-opt {
   border: 0; border-radius: 18px; padding: 20px 10px 16px; display: flex; flex-direction: column; align-items: center; gap: 8px;

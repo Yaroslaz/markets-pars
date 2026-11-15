@@ -1,6 +1,7 @@
 import { parseProduct, productFromBrowser, mergeBrowserProduct, extractUrls, HttpError } from './parsers.js';
+import { accessConfig, requireSession, signIn } from './access.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const STALE_MS = 6 * 60 * 60 * 1000; // через сколько обновлять цену/рейтинг в фоне
 
 const SCHEMA = [
@@ -42,12 +43,12 @@ async function ensureSchema(db) {
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   'Access-Control-Max-Age': '86400',
 };
 
 const json = (data, status = 200) =>
-  new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS } });
+  new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...CORS } });
 
 export default {
   async fetch(request, env, ctx) {
@@ -68,8 +69,12 @@ async function route(request, env, ctx) {
   const method = request.method;
 
   if (path === '' || path === '/api' || path === '/api/health') {
-    return json({ ok: true, service: 'markets-pars', version: VERSION, db: !!env.DB });
+    return json({ ok: true, service: 'markets-pars', version: VERSION, db: !!env.DB, authRequired: true });
   }
+  const access = accessConfig(env);
+  if (path === '/api/auth/login' && method === 'POST') return json(await signIn(request, env, access));
+  await requireSession(request, access);
+  if (path === '/api/auth/session' && method === 'GET') return json({ ok: true });
   if (!env.DB) throw new HttpError(500, 'База D1 не подключена (binding DB)');
   await ensureSchema(env.DB);
 
@@ -240,6 +245,9 @@ async function refreshCard(env, id) {
 }
 
 function keepCompleteProduct(fresh, old) {
+  if (fresh.partial && fresh.images?.length && !old.images?.length) {
+    return mergeBrowserProduct(old, { images: fresh.images, thumbs: fresh.thumbs });
+  }
   const lostPrice = fresh.price == null && old.price != null;
   const lostPhotos = !fresh.images?.length && old.images?.length;
   const lostImportedTitle = (old.titleFromBrowser || old.titleFromShare) && !fresh.titleFromShare &&

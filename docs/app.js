@@ -47,6 +47,8 @@ const store = {
 
 const state = {
   api: '',
+  accessToken: '',
+  unlocked: false,
   board: 'main',
   boards: [],
   role: '', // m — парень, f — девушка
@@ -63,9 +65,12 @@ function initState() {
   const qs = new URLSearchParams(location.search);
   const apiQ = qs.get('api');
   const boardQ = qs.get('b');
-  if (apiQ) store.set('api', normalizeApi(apiQ));
+  const defaultApi = normalizeApi(CFG.apiUrl);
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+  if (apiQ && (!defaultApi || local)) store.set('api_override', normalizeApi(apiQ));
   if (boardQ && /^[\w-]{1,40}$/.test(boardQ)) store.set('board', boardQ);
-  state.api = normalizeApi(store.get('api') || CFG.apiUrl || '');
+  state.api = normalizeApi(store.get('api_override') || (defaultApi ? '' : store.get('api')) || defaultApi);
+  state.accessToken = store.get('access:' + state.api, '');
   state.board = store.get('board') || 'main';
   state.role = ['m', 'f'].includes(store.get('role')) ? store.get('role') : '';
 
@@ -130,10 +135,10 @@ function trimTail(s) {
 
 function detectSource(host) {
   host = String(host).toLowerCase();
-  if (/(^|\.)ozon\.(ru|by|kz)$/.test(host)) return 'ozon';
+  if (/(^|\.)ozon\.(ru|by|kz)$/.test(host) || host === 'ozon.onelink.me') return 'ozon';
   if (/(^|\.)(wildberries\.(ru|by|kz|am|kg|uz)|wb\.ru)$/.test(host)) return 'wb';
-  if (/(^|\.)market\.yandex\.(ru|by|kz|com)$/.test(host)) return 'ym';
-  if (/(^|\.)aliexpress\.(ru|com|us)$/.test(host)) return 'ali';
+  if (/(^|\.)market\.yandex\.(ru|by|kz|com)$/.test(host) || host === 'ya.cc') return 'ym';
+  if (/(^|\.)(aliexpress\.(ru|com|us)|aliclick\.shop)$/.test(host)) return 'ali';
   return null;
 }
 
@@ -153,18 +158,81 @@ function productKey(source, url) {
 /* ================================ API ================================= */
 
 async function api(path, opts = {}) {
-  if (!state.api) throw new Error('Сервер не настроен');
-  const res = await fetch(state.api + path, {
+  const base = state.api;
+  if (!base) throw new Error('Сервер не настроен');
+  const token = opts.public ? '' : state.accessToken;
+  const headers = new Headers();
+  if (opts.body) headers.set('Content-Type', 'application/json');
+  if (token) headers.set('Authorization', 'Bearer ' + token);
+  const res = await fetch(base + path, {
     method: opts.method || 'GET',
-    headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
+    headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
+    redirect: 'error',
   });
   let data = null;
   try {
     data = await res.json();
   } catch {}
+  if (base !== state.api || (!opts.public && token !== state.accessToken)) {
+    throw new Error('Подключение изменилось');
+  }
+  if (res.status === 401 && !opts.public) lockApp();
   if (!res.ok) throw new Error(data?.error || `Ошибка ${res.status}`);
   return data;
+}
+
+const accessDialog = $('#accessDialog');
+const accessForm = $('#accessForm');
+
+function setAccessToken(token) {
+  state.accessToken = token;
+  store.set('access:' + state.api, token);
+}
+
+function lockApp() {
+  setAccessToken('');
+  state.unlocked = false;
+  state.cards = [];
+  state.boards = [];
+  state.openId = null;
+  state.error = '';
+  state.loading = false;
+  for (const dialog of $$('dialog[open]')) {
+    if (dialog !== accessDialog) dialog.close();
+  }
+  render();
+  if (!accessDialog.open) {
+    $('#accessStatus').textContent = '';
+    accessDialog.showModal();
+  }
+}
+
+async function signIn(event) {
+  event.preventDefault();
+  const button = $('button[type=submit]', accessForm);
+  const password = accessForm.elements.password;
+  const status = $('#accessStatus');
+  button.disabled = true;
+  status.textContent = '';
+  password.removeAttribute('aria-invalid');
+  try {
+    const origin = new URL(state.api);
+    if (origin.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)) {
+      throw new Error('Для входа нужен адрес сервера с HTTPS');
+    }
+    const { token } = await api('/api/auth/login', { method: 'POST', body: { password: password.value }, public: true });
+    if (typeof token !== 'string' || !token) throw new Error('Сервер не выдал доступ');
+    setAccessToken(token);
+    accessForm.reset();
+    await enterApp(true);
+  } catch (error) {
+    status.textContent = error instanceof TypeError ? 'Не удалось подключиться. Проверьте интернет и повторите вход.' : error.message;
+    password.setAttribute('aria-invalid', 'true');
+    password.focus();
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function loadCards({ silent = false } = {}) {
@@ -475,6 +543,7 @@ function bump(id, kind) {
 
 const addDialog = $('#addDialog');
 const addText = $('#addForm textarea');
+const browserImportSources = new Set(['ozon', 'ym', 'ali']);
 
 function readAddItems(text) {
   const ordinary = [];
@@ -487,13 +556,13 @@ function readAddItems(text) {
       continue;
     }
     try {
-      if (trimmed.length > 8000) throw new Error();
+      if (trimmed.length > 12000) throw new Error();
       const { url, title, price, images } = JSON.parse(trimmed.slice(PRODUCT_IMPORT_PREFIX.length));
       const product = new URL(url);
       const source = detectSource(product.hostname);
       const key = productKey(source, product);
       if (product.protocol !== 'https:' || product.username || product.password ||
-          (source !== 'ozon' && source !== 'ali') || !/^(?:ozon|ali):\d+$/.test(key)) throw new Error();
+          !browserImportSources.has(source) || !/^(?:ozon|ym|ali):\d+$/.test(key)) throw new Error();
       imported.push({ url: product.href, source, key, browserData: { title, price, images } });
     } catch {
       invalid++;
@@ -524,6 +593,7 @@ function autosize(el) {
 document.addEventListener('input', (e) => e.target.tagName === 'TEXTAREA' && autosize(e.target));
 
 function updateParseInfo() {
+  $('#productRecovery').hidden = true;
   autosize(addText);
   const { links, ignored, invalid } = readAddItems(addText.value);
   const info = $('#parseInfo');
@@ -535,9 +605,23 @@ function updateParseInfo() {
     info.innerHTML = `Найдено: <b>${links.length}</b>${imported ? ` · из браузера ${imported}` : ''}${ignored ? ` · пропущу ${ignored} ${plural(ignored, 'чужую ссылку', 'чужие ссылки', 'чужих ссылок')}` : ''}`;
   const link = $('#productImportLink');
   const item = links.length === 1 ? links[0] : null;
-  link.hidden = !item || !!item.browserData || !['ozon', 'ali'].includes(item.source);
+  link.hidden = !item || !!item.browserData || !browserImportSources.has(item.source);
   if (!link.hidden) link.href = item.url;
   $('#addForm [type=submit] span').textContent = links.length > 1 ? `Добавить ${links.length}` : 'Добавить';
+}
+
+function showProductRecovery(items) {
+  $('#productRecoveryLinks').replaceChildren(...items.map(({ url, source }) => {
+    const link = document.createElement('a');
+    link.className = 'btn';
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = 'Открыть товар · ' + SOURCES[source].name;
+    return link;
+  }));
+  $('#productRecovery').hidden = false;
+  setAccordionOpen($('#productImportHelp'), true);
 }
 
 async function copyProductBookmarklet() {
@@ -577,6 +661,7 @@ async function addLinks(text) {
     toast('Не нашёл ссылок на Ozon, WB, Маркет или AliExpress');
     return;
   }
+  $('#productRecovery').hidden = true;
   const shareText = links.length === 1 && links[0].source === 'ali' && text.length <= 3000 &&
     /^(?:Смотри, что есть на AliExpress!|I just found this on AliExpress:)/i.test(text.trim()) ? text : undefined;
   const list = $('#progress');
@@ -587,8 +672,7 @@ async function addLinks(text) {
   submit.disabled = true;
   const rows = [...list.children];
   const board = state.board;
-  const marketplaceLink = links.length === 1 && !links[0].browserData && ['ozon', 'ali'].includes(links[0].source);
-  let incompleteUrl = '';
+  const recovery = [];
   let added = 0, updated = 0, dups = 0, failed = 0;
 
   // 3 запроса параллельно — сервер парсит по одной ссылке за раз
@@ -597,13 +681,13 @@ async function addLinks(text) {
     while (next < links.length) {
       const i = next++;
       const li = rows[i];
+      const { url, source, browserData } = links[i];
       try {
-        const { url, browserData } = links[i];
         const path = browserData ? '/api/cards/import' : '/api/cards';
         const r = await api(path, { method: 'POST', body: { board, url, shareText, browserData } });
         if (state.board === board) upsertCard(r.card);
-        if (marketplaceLink && r.card.partial && (r.card.price == null || !r.card.images?.length)) {
-          incompleteUrl = r.card.url;
+        if (!browserData && browserImportSources.has(source) && (r.card.price == null || !r.card.images?.length)) {
+          recovery.push({ url: r.card.url, source, saved: true });
         }
         if (r.updated) updated++;
         else if (r.duplicate) dups++;
@@ -613,6 +697,7 @@ async function addLinks(text) {
         li.querySelector('.u').textContent = r.card.title;
       } catch (e) {
         failed++;
+        if (!browserData && browserImportSources.has(source)) recovery.push({ url, source });
         li.className = 'err';
         li.querySelector('.spinner').outerHTML = `<span class="st" title="${esc(e.message)}">ошибка</span>`;
         li.querySelector('.u').textContent = e.message;
@@ -629,13 +714,13 @@ async function addLinks(text) {
   if (dups) parts.push(`уже были ${dups}`);
   if (failed) parts.push(`ошибок ${failed}`);
   toast(parts.join(', ').replace(/^./, (s) => s.toUpperCase()));
-  if (addDialog.open && addText.value === text && marketplaceLink && (incompleteUrl || failed)) {
-    if (incompleteUrl) {
-      addText.value = incompleteUrl;
+  if (addDialog.open && addText.value === text && recovery.length) {
+    if (links.length === 1 && recovery[0].saved) {
+      addText.value = recovery[0].url;
       updateParseInfo();
-      $('#parseInfo').textContent = 'Карточка сохранена. Откройте товар, чтобы перенести недостающие данные.';
     }
-    setAccordionOpen($('#productImportHelp'), true);
+    $('#parseInfo').textContent = failed ? 'Можно добавить товар со страницы магазина.' : 'Недостающие данные можно перенести из браузера.';
+    showProductRecovery(recovery);
   } else if (!failed && addText.value === text) {
     addText.value = '';
     setTimeout(() => addDialog.open && !addText.value && addDialog.close(), 700);
@@ -955,13 +1040,14 @@ function saveSettings() {
   const api = normalizeApi(f.apiUrl.value);
   const changed = api !== state.api;
   state.api = api;
-  store.set('api', api === normalizeApi(CFG.apiUrl) ? '' : api);
+  store.set('api_override', api === normalizeApi(CFG.apiUrl) ? '' : api);
   if (changed) {
+    state.accessToken = store.get('access:' + state.api, '');
+    state.unlocked = false;
     state.cards = [];
     state.boards = [];
     cardSig.clear();
-    loadCards();
-    loadBoards();
+    setTimeout(() => enterApp(), 0);
   }
 }
 
@@ -1187,7 +1273,7 @@ function bind() {
         if (!state.api) return openSettings();
         return share({ title: 'Выбираем вместе', text: 'Голосуй за товары в нашей подборке', url: boardUrl() });
       case 'reload':
-        return loadCards();
+        return state.unlocked ? loadCards() : enterApp();
       case 'toggle-more':
         return actEl.closest('.dd').classList.toggle('open');
       case 'close-viewer':
@@ -1262,6 +1348,8 @@ function bind() {
     d.addEventListener('click', (e) => e.target === d && d.close());
 
   addText.addEventListener('input', updateParseInfo);
+  accessDialog.addEventListener('cancel', (e) => e.preventDefault());
+  accessForm.addEventListener('submit', signIn);
   $('#addForm').addEventListener('submit', (e) => {
     if (e.submitter?.value !== 'submit') return;
     e.preventDefault();
@@ -1297,17 +1385,32 @@ function bind() {
 
   // Фоновое обновление голосов от других людей
   setInterval(() => {
-    if (document.visibilityState === 'visible' && state.api && !addDialog.open && !editDialog.open) loadCards({ silent: true });
+    if (document.visibilityState === 'visible' && state.unlocked && state.api && !addDialog.open && !editDialog.open) loadCards({ silent: true });
   }, POLL_MS);
-  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && state.api && loadCards({ silent: true }));
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && state.unlocked && state.api && loadCards({ silent: true }));
 }
 
 /* ============================== Старт ================================= */
 
-async function start() {
-  initState();
-  bind();
-  render();
+async function enterApp(verified = false) {
+  if (state.api && !verified) {
+    try {
+      const health = await api('/api/health', { public: true });
+      if (health.authRequired) {
+        if (!state.accessToken) return lockApp();
+        await api('/api/auth/session');
+      }
+    } catch (error) {
+      if (!accessDialog.open) {
+        state.error = error.message;
+        state.loading = false;
+        render();
+      }
+      return;
+    }
+  }
+  state.unlocked = true;
+  if (accessDialog.open) accessDialog.close();
   if (!state.role) askRole();
   loadBoards();
   await loadCards();
@@ -1322,6 +1425,13 @@ async function start() {
   }
   const m = location.hash.match(/^#card=([\w-]+)/);
   if (m && state.cards.some((c) => c.id === m[1])) openViewer(m[1]);
+}
+
+function start() {
+  initState();
+  bind();
+  render();
+  return enterApp();
 }
 
 start();
