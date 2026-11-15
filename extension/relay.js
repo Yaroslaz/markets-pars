@@ -8,8 +8,10 @@ window.addEventListener('message', (e) => {
   } catch {
     return;
   }
-  if (msg?.type !== 'read' || typeof msg.url !== 'string') return; // сообщения о теме и т. п. расширению не нужны
   const reply = (body) => window.postMessage({ __vmesteExt: 'from-ext', data: JSON.stringify({ id: msg.id, ...body }) }, location.origin);
+  // Буфер обмена в браузере сайт читает сам — отказываем сразу, чтобы он не ждал
+  if (msg?.type === 'clipboard') return reply({ ok: false, error: 'unsupported' });
+  if (msg?.type !== 'read' || typeof msg.url !== 'string') return; // сообщения о теме и т. п. расширению не нужны
   let answered = false;
   let port;
   try {
