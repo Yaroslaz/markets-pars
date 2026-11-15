@@ -35,18 +35,23 @@ export function detectSource(url) {
   if (/(^|\.)ozon\.(ru|by|kz)$/.test(host) || host === 'ozon.onelink.me') return 'ozon';
   if (/(^|\.)(wildberries\.(ru|by|kz|am|kg|uz)|wb\.ru|wbbasket\.ru)$/.test(host)) return 'wb';
   if (/(^|\.)market\.yandex\.(ru|by|kz|com)$/.test(host) || host === 'ya.cc') return 'ym';
-  if (/(^|\.)(aliexpress\.(ru|com|us)|alibaba\.com|aliclick\.shop)$/.test(host) || /^s\.click\.aliexpress\.com$/.test(host))
+  if (/(^|\.)(aliexpress\.(ru|com|us)|alibaba\.com|aliclick\.shop|ali\.click)$/.test(host) || /^s\.click\.aliexpress\.com$/.test(host))
     return 'ali';
   return null;
 }
 
-/** Ручное раскрытие редиректов (короткие ссылки ozon.ru/t, market.yandex.ru/cc, a.aliexpress.com/_). */
-async function resolveRedirects(url, source, maxHops = 6) {
+/** Ручное раскрытие редиректов (короткие ссылки ozon.ru/t, market.yandex.ru/cc, a.aliexpress.com/_, ali.click). */
+async function resolveRedirects(url, source, maxHops = 8) {
   let current = url;
+  // AliExpress (ali.click → aliexpress.ru/aff/redirect) сначала ставит cookie через login.aliexpress.ru
+  // и возвращает на тот же адрес — без cookie это бесконечный круг. Храним их между переходами.
+  const jar = new Map();
   for (let i = 0; i < maxHops; i++) {
     // Ozon отдаёт редирект только «голому» запросу, Яндекс — только запросу с браузерными заголовками
     let res = null;
-    for (const headers of source === 'ozon' ? [undefined, HEADERS] : [HEADERS, undefined]) {
+    const cookie = [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
+    for (const base of source === 'ozon' ? [undefined, HEADERS] : [HEADERS, undefined]) {
+      const headers = cookie ? { ...(base || {}), Cookie: cookie } : base;
       try {
         res = await fetch(current, { method: 'GET', redirect: 'manual', headers });
       } catch {
@@ -54,12 +59,21 @@ async function resolveRedirects(url, source, maxHops = 6) {
       }
       if (res && (res.headers.get('location') || res.ok)) break;
     }
+    if (res) {
+      const setCookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie()
+        : (res.headers.get('set-cookie') || '').split(/,(?=\s*[^;,=\s]+=)/);
+      for (const line of setCookies) {
+        const pair = line.split(';')[0].trim();
+        const eq = pair.indexOf('=');
+        if (eq > 0 && jar.size < 40) jar.set(pair.slice(0, eq), pair.slice(eq + 1));
+      }
+    }
     if (!res) return current;
     const loc = res.headers.get('location');
     if (res.status >= 300 && res.status < 400 && loc) {
       const next = new URL(loc, current).toString();
       // Ozon антибот уводит на ?__rr=1 того же адреса — дальше идти смысла нет
-      if (stripQuery(next) === stripQuery(current)) return current;
+      if (stripQuery(next) === stripQuery(current) && !jar.size) return current;
       if (detectSource(next) === source && !needsResolve(next, source)) {
         return next;
       }

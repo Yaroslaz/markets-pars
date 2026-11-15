@@ -143,7 +143,7 @@ function detectSource(host) {
   if (/(^|\.)ozon\.(ru|by|kz)$/.test(host) || host === 'ozon.onelink.me') return 'ozon';
   if (/(^|\.)(wildberries\.(ru|by|kz|am|kg|uz)|wb\.ru)$/.test(host)) return 'wb';
   if (/(^|\.)market\.yandex\.(ru|by|kz|com)$/.test(host) || host === 'ya.cc') return 'ym';
-  if (/(^|\.)(aliexpress\.(ru|com|us)|aliclick\.shop)$/.test(host)) return 'ali';
+  if (/(^|\.)(aliexpress\.(ru|com|us)|aliclick\.shop|ali\.click)$/.test(host)) return 'ali';
   return null;
 }
 

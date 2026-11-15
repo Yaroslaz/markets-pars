@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Выбираем вместе",
   "short_name": "Вместе",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Добавляет товары Ozon, Яндекс Маркета и AliExpress в подборку «Выбираем вместе»: страница товара читается прямо в вашем браузере.",
   "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
   "action": {
@@ -18,7 +18,7 @@
     "https://*.ozon.ru/*", "https://ozon.ru/*", "https://*.ozon.by/*", "https://*.ozon.kz/*", "https://ozon.onelink.me/*",
     "https://market.yandex.ru/*", "https://market.yandex.by/*", "https://market.yandex.kz/*", "https://ya.cc/*",
     "https://*.aliexpress.ru/*", "https://aliexpress.ru/*", "https://*.aliexpress.com/*", "https://aliexpress.com/*",
-    "https://*.aliexpress.us/*", "https://aliclick.shop/*"
+    "https://*.aliexpress.us/*", "https://aliclick.shop/*", "https://ali.click/*"
   ],
   "content_scripts": [
     {

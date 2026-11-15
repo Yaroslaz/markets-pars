@@ -51,7 +51,7 @@ final class ProductReader {
     private static final long CHECK_LIMIT_MS = 180_000;
 
     private static final Pattern MARKET_HOST = Pattern.compile(
-            "(^|\\.)(ozon\\.(ru|by|kz)|market\\.yandex\\.(ru|by|kz|com)|aliexpress\\.(ru|com|us)|aliclick\\.shop)$|^(ya\\.cc|ozon\\.onelink\\.me)$");
+            "(^|\\.)(ozon\\.(ru|by|kz)|market\\.yandex\\.(ru|by|kz|com)|aliexpress\\.(ru|com|us)|aliclick\\.shop|ali\\.click)$|^(ya\\.cc|ozon\\.onelink\\.me)$");
 
     private static final class Job {
         final int id;
