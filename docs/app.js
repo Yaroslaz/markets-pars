@@ -163,20 +163,23 @@ async function api(path, opts = {}) {
   const token = opts.public ? '' : state.accessToken;
   const headers = new Headers();
   if (opts.body) headers.set('Content-Type', 'application/json');
+  if (opts.file) headers.set('Content-Type', opts.file.type);
   if (token) headers.set('Authorization', 'Bearer ' + token);
   const res = await fetch(base + path, {
     method: opts.method || 'GET',
     headers,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    body: opts.file ? await opts.file.arrayBuffer() : opts.body ? JSON.stringify(opts.body) : undefined,
     redirect: 'error',
   });
+  if (base !== state.api || (!opts.public && token !== state.accessToken)) {
+    throw new Error('Подключение изменилось');
+  }
+  if (res.ok && opts.image) return res.blob();
   let data = null;
   try {
     data = await res.json();
   } catch {}
-  if (base !== state.api || (!opts.public && token !== state.accessToken)) {
-    throw new Error('Подключение изменилось');
-  }
+  if (base !== state.api || (!opts.public && token !== state.accessToken)) throw new Error('Подключение изменилось');
   if (res.status === 401 && !opts.public) lockApp();
   if (!res.ok) throw new Error(data?.error || `Ошибка ${res.status}`);
   return data;
@@ -192,6 +195,7 @@ function setAccessToken(token) {
 
 function lockApp() {
   setAccessToken('');
+  clearPrivatePhotos();
   state.unlocked = false;
   state.cards = [];
   state.boards = [];
@@ -249,7 +253,7 @@ async function loadCards({ silent = false } = {}) {
     const data = await api(`/api/cards?board=${encodeURIComponent(state.board)}`);
     // не перетираем голос, который пользователь только что нажал
     const pending = new Map(state.cards.filter((c) => c._pending).map((c) => [c.id, c]));
-    state.cards = data.cards.map((c) => (pending.has(c.id) ? pending.get(c.id) : c));
+    state.cards = data.cards.map((c) => pending.get(c.id) || withUploadedPhoto(c));
     state.error = '';
   } catch (e) {
     if (!silent) state.error = e.message;
@@ -337,12 +341,39 @@ function placeholderHtml(c, withHint = true) {
   }</div></div>`;
 }
 
+const privatePhoto = /^\/api\/cards\/[a-f0-9]{16}\/photo\?v=[a-f0-9-]{36}$/;
+const privatePhotos = new Map();
+
+function photoSource(value) {
+  return privatePhoto.test(value) ? `data-private-photo="${esc(value)}"` : `src="${esc(value)}"`;
+}
+
+function loadPrivatePhotos(root) {
+  for (const img of $$('img[data-private-photo]:not([src])', root)) {
+    const path = img.dataset.privatePhoto;
+    let photo = privatePhotos.get(path);
+    if (!photo) {
+      photo = api(path, { image: true }).then((blob) => URL.createObjectURL(blob));
+      privatePhotos.set(path, photo);
+      photo.catch(() => { if (privatePhotos.get(path) === photo) privatePhotos.delete(path); });
+    }
+    photo.then((url) => {
+      if (img.isConnected && privatePhotos.get(path) === photo) img.src = url;
+    }).catch(() => {});
+  }
+}
+
+function clearPrivatePhotos() {
+  for (const photo of privatePhotos.values()) photo.then((url) => URL.revokeObjectURL(url)).catch(() => {});
+  privatePhotos.clear();
+}
+
 function cardHtml(c) {
   const img = (c.thumbs && c.thumbs[0]) || (c.images && c.images[0]);
   const n = (c.images || []).length;
   return `<article class="card" data-id="${c.id}" tabindex="0">
     <div class="photo">${
-      img ? `<img src="${esc(img)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : placeholderHtml(c)
+      img ? `<img ${photoSource(img)} alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : placeholderHtml(c)
     }<span class="mk" title="${SOURCES[c.source].name}">${fav(c.source)}</span>${n > 1 ? `<span class="n">${n} фото</span>` : ''}</div>
     <div class="body">
       ${priceHtml(c)}
@@ -425,6 +456,7 @@ function render() {
     if (want !== el) grid.insertBefore(el, want);
     prev = el;
   }
+  loadPrivatePhotos(grid);
 }
 
 // Островок над таб-баром: сколько товаров на экране и на какую сумму
@@ -543,36 +575,7 @@ function bump(id, kind) {
 
 const addDialog = $('#addDialog');
 const addText = $('#addForm textarea');
-const browserImportSources = new Set(['ozon', 'ym', 'ali']);
-
-function readAddItems(text) {
-  const ordinary = [];
-  const imported = [];
-  let invalid = 0;
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed !== PRODUCT_IMPORT_PREFIX.trimEnd() && !trimmed.startsWith(PRODUCT_IMPORT_PREFIX)) {
-      ordinary.push(line);
-      continue;
-    }
-    try {
-      if (trimmed.length > 12000) throw new Error();
-      const { url, title, price, images } = JSON.parse(trimmed.slice(PRODUCT_IMPORT_PREFIX.length));
-      const product = new URL(url);
-      const source = detectSource(product.hostname);
-      const key = productKey(source, product);
-      if (product.protocol !== 'https:' || product.username || product.password ||
-          !browserImportSources.has(source) || !/^(?:ozon|ym|ali):\d+$/.test(key)) throw new Error();
-      imported.push({ url: product.href, source, key, browserData: { title, price, images } });
-    } catch {
-      invalid++;
-    }
-  }
-  const { links, ignored } = extractLinks(ordinary.join('\n'));
-  const items = new Map(links.map((link) => [link.key, link]));
-  for (const item of imported) items.set(item.key, item);
-  return { links: [...items.values()], ignored, invalid };
-}
+const verificationSources = new Set(Object.keys(SOURCES));
 
 function openAdd(prefill) {
   if (!state.api) return openSettings();
@@ -595,48 +598,27 @@ document.addEventListener('input', (e) => e.target.tagName === 'TEXTAREA' && aut
 function updateParseInfo() {
   $('#productRecovery').hidden = true;
   autosize(addText);
-  const { links, ignored, invalid } = readAddItems(addText.value);
+  const { links, ignored } = extractLinks(addText.value);
   const info = $('#parseInfo');
-  const imported = links.filter((item) => item.browserData).length;
   if (!addText.value.trim()) info.textContent = '';
-  else if (invalid) info.textContent = 'Скопируйте данные товара заново и вставьте их целиком.';
   else if (!links.length) info.textContent = 'Ссылок на товары не нашёл';
   else
-    info.innerHTML = `Найдено: <b>${links.length}</b>${imported ? ` · из браузера ${imported}` : ''}${ignored ? ` · пропущу ${ignored} ${plural(ignored, 'чужую ссылку', 'чужие ссылки', 'чужих ссылок')}` : ''}`;
-  const link = $('#productImportLink');
-  const item = links.length === 1 ? links[0] : null;
-  link.hidden = !item || !!item.browserData || !browserImportSources.has(item.source);
-  if (!link.hidden) link.href = item.url;
+    info.innerHTML = `Найдено <b>${links.length}</b>${ignored ? ` · пропущу ${ignored} ${plural(ignored, 'чужую ссылку', 'чужие ссылки', 'чужих ссылок')}` : ''}`;
   $('#addForm [type=submit] span').textContent = links.length > 1 ? `Добавить ${links.length}` : 'Добавить';
 }
 
 function showProductRecovery(items) {
-  $('#productRecoveryLinks').replaceChildren(...items.map(({ url, source }) => {
-    const link = document.createElement('a');
-    link.className = 'btn';
-    link.href = url;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.textContent = 'Открыть товар · ' + SOURCES[source].name;
-    return link;
+  $('#productRecoveryLinks').replaceChildren(...items.map(({ url, source, id }) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn';
+    button.dataset.action = 'check-product';
+    button.dataset.url = url;
+    if (id) button.dataset.cardId = id;
+    button.textContent = 'Проверка · ' + SOURCES[source].name;
+    return button;
   }));
   $('#productRecovery').hidden = false;
-  setAccordionOpen($('#productImportHelp'), true);
-}
-
-async function copyProductBookmarklet() {
-  const code = productBookmarklet();
-  try {
-    await navigator.clipboard.writeText(code);
-    toast('Код закладки скопирован');
-  } catch {
-    const field = $('#productBookmarkletCode');
-    field.value = code;
-    field.hidden = false;
-    field.focus();
-    field.select();
-    toast('Скопируйте выделенный код');
-  }
 }
 
 async function readClipboard() {
@@ -652,11 +634,7 @@ async function readClipboard() {
 async function addLinks(text) {
   const submit = $('#addForm [type=submit]');
   if (submit.disabled) return;
-  const { links, invalid } = readAddItems(text);
-  if (invalid) {
-    toast('Вставьте данные товара целиком');
-    return;
-  }
+  const { links } = extractLinks(text);
   if (!links.length) {
     toast('Не нашёл ссылок на Ozon, WB, Маркет или AliExpress');
     return;
@@ -673,7 +651,7 @@ async function addLinks(text) {
   const rows = [...list.children];
   const board = state.board;
   const recovery = [];
-  let added = 0, updated = 0, dups = 0, failed = 0;
+  let added = 0, dups = 0, failed = 0;
 
   // 3 запроса параллельно — сервер парсит по одной ссылке за раз
   let next = 0;
@@ -681,23 +659,21 @@ async function addLinks(text) {
     while (next < links.length) {
       const i = next++;
       const li = rows[i];
-      const { url, source, browserData } = links[i];
+      const { url, source } = links[i];
       try {
-        const path = browserData ? '/api/cards/import' : '/api/cards';
-        const r = await api(path, { method: 'POST', body: { board, url, shareText, browserData } });
+        const r = await api('/api/cards', { method: 'POST', body: { board, url, shareText } });
         if (state.board === board) upsertCard(r.card);
-        if (!browserData && browserImportSources.has(source) && (r.card.price == null || !r.card.images?.length)) {
-          recovery.push({ url: r.card.url, source, saved: true });
+        if (verificationSources.has(source) && !r.card.uploadedPhoto && !r.card.images?.length) {
+          recovery.push({ url: r.card.url, source, id: r.card.id });
         }
-        if (r.updated) updated++;
-        else if (r.duplicate) dups++;
+        if (r.duplicate) dups++;
         else added++;
-        li.className = r.duplicate && !r.updated ? 'dup' : 'ok';
-        li.querySelector('.spinner').outerHTML = `<span class="st">${r.updated ? 'обновлено' : r.duplicate ? 'уже есть' : 'добавлено'}</span>`;
+        li.className = r.duplicate ? 'dup' : 'ok';
+        li.querySelector('.spinner').outerHTML = `<span class="st">${r.duplicate ? 'уже есть' : 'добавлено'}</span>`;
         li.querySelector('.u').textContent = r.card.title;
       } catch (e) {
         failed++;
-        if (!browserData && browserImportSources.has(source)) recovery.push({ url, source });
+        if (verificationSources.has(source)) recovery.push({ url, source });
         li.className = 'err';
         li.querySelector('.spinner').outerHTML = `<span class="st" title="${esc(e.message)}">ошибка</span>`;
         li.querySelector('.u').textContent = e.message;
@@ -710,16 +686,15 @@ async function addLinks(text) {
 
   const parts = [];
   if (added) parts.push(`добавлено ${added}`);
-  if (updated) parts.push(`обновлено ${updated}`);
   if (dups) parts.push(`уже были ${dups}`);
   if (failed) parts.push(`ошибок ${failed}`);
   toast(parts.join(', ').replace(/^./, (s) => s.toUpperCase()));
   if (addDialog.open && addText.value === text && recovery.length) {
-    if (links.length === 1 && recovery[0].saved) {
+    if (links.length === 1 && recovery[0].id) {
       addText.value = recovery[0].url;
       updateParseInfo();
     }
-    $('#parseInfo').textContent = failed ? 'Можно добавить товар со страницы магазина.' : 'Недостающие данные можно перенести из браузера.';
+    $('#parseInfo').textContent = failed ? 'Некоторые ссылки требуют проверки.' : 'Магазин не передал фото.';
     showProductRecovery(recovery);
   } else if (!failed && addText.value === text) {
     addText.value = '';
@@ -728,9 +703,119 @@ async function addLinks(text) {
 }
 
 function upsertCard(card) {
+  card = withUploadedPhoto(card);
   const i = state.cards.findIndex((c) => c.id === card.id);
   if (i >= 0) state.cards[i] = card;
   else state.cards.unshift(card);
+}
+
+function withUploadedPhoto(card) {
+  if (!privatePhoto.test(card.uploadedPhoto)) return card;
+  const images = card.images || [];
+  const thumbs = card.thumbs?.length === images.length ? card.thumbs : images;
+  return { ...card, images: [card.uploadedPhoto, ...images], thumbs: [card.uploadedPhoto, ...thumbs], partial: card.price == null };
+}
+
+const verificationDialog = $('#verificationDialog');
+const photoInput = $('#cardPhotoInput');
+
+function openProductCheck(value, cardId) {
+  if (!value) return;
+  const url = new URL(value);
+  const source = detectSource(url.hostname);
+  if (!verificationSources.has(source) || url.username || url.password) return;
+  url.protocol = 'https:';
+  const frame = $('#verificationFrame');
+  const framed = /(^|\.)(ozon\.(ru|by|kz)|market\.yandex\.(ru|by|kz|com)|wildberries\.(ru|by|kz|am|kg|uz)|wb\.ru|aliexpress\.(ru|com|us))$/.test(url.hostname)
+    || ['ozon.onelink.me', 'ya.cc'].includes(url.hostname);
+  frame.hidden = !framed;
+  $('#verificationStatus').hidden = !framed;
+  $('#verificationTitle').textContent = SOURCES[source].name;
+  const external = $('#verificationExternal');
+  const chrome = IS_ANDROID && /Chrome\//.test(UA) && !/(?:EdgA|SamsungBrowser|YaBrowser|OPR)\//.test(UA);
+  external.href = chrome ? androidIntent(url, 'com.android.chrome') : url.href;
+  external.textContent = chrome ? 'Открыть в Chrome' : 'Открыть в браузере';
+  external.target = chrome ? '_self' : '_blank';
+  $('#verificationAddress').value = url.href;
+  $('#verificationAddressField').hidden = true;
+  $('#verificationCopyStatus').hidden = true;
+  const photo = $('#verificationPhoto');
+  photo.hidden = !cardId;
+  photo.dataset.cardId = cardId || '';
+  verificationDialog.showModal();
+  if (framed) frame.src = url.href;
+}
+
+async function copyVerificationUrl() {
+  const field = $('#verificationAddress');
+  const status = $('#verificationCopyStatus');
+  try {
+    await navigator.clipboard.writeText(field.value);
+    status.textContent = 'Вставьте ссылку в адресную строку браузера.';
+  } catch {
+    $('#verificationAddressField').hidden = false;
+    field.focus();
+    field.select();
+    status.textContent = 'Скопируйте выделенный адрес и вставьте его в строку браузера.';
+  }
+  status.hidden = false;
+}
+
+function selectPhoto(id) {
+  if (!id || !state.cards.some((card) => card.id === id)) return;
+  photoInput.dataset.cardId = id;
+  photoInput.value = '';
+  photoInput.click();
+}
+
+async function preparePhoto(file) {
+  const source = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = reject;
+      image.src = source;
+    });
+    const scale = Math.min(1, 1000 / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    for (const quality of [0.86, 0.68, 0.48]) {
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+      if (blob && blob.size <= 512 * 1024) return blob;
+    }
+  } catch {
+    throw new Error('Не удалось открыть фото. Выберите изображение JPEG или PNG.');
+  } finally {
+    URL.revokeObjectURL(source);
+  }
+  throw new Error('Фото слишком большое. Выберите другое изображение.');
+}
+
+async function uploadPhoto() {
+  const [file] = photoInput.files;
+  if (!file) return;
+  const id = photoInput.dataset.cardId;
+  const board = state.board;
+  try {
+    const result = await api(`/api/cards/${id}/photo`, { method: 'POST', file: await preparePhoto(file) });
+    if (board !== state.board) return;
+    upsertCard(result.card);
+    render();
+    if (verificationDialog.open && $('#verificationPhoto').dataset.cardId === id) verificationDialog.close();
+    if (addDialog.open && $('#productRecoveryLinks').children.length === 1) addDialog.close();
+    if (state.openId === id) refreshViewer(true);
+    toast('Фото добавлено');
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    photoInput.value = '';
+  }
 }
 
 /* ===================== Карточка, галерея, лайтбокс ==================== */
@@ -750,11 +835,12 @@ function closeViewer() {
   if (location.hash.startsWith('#card=')) history.replaceState(null, '', location.pathname + location.search);
 }
 
+function androidIntent(url, packageName) {
+  return `intent://${url.host}${url.pathname}${url.search}#Intent;scheme=https;package=${packageName};S.browser_fallback_url=${encodeURIComponent(url.href)};end`;
+}
+
 function appHref(c) {
-  if (IS_ANDROID) {
-    const u = new URL(c.url);
-    return `intent://${u.host}${u.pathname}${u.search}#Intent;scheme=https;package=${SOURCES[c.source].pkg};S.browser_fallback_url=${encodeURIComponent(c.url)};end`;
-  }
+  if (IS_ANDROID) return androidIntent(new URL(c.url), SOURCES[c.source].pkg);
   // iOS: универсальная ссылка откроет приложение, если оно установлено
   return c.url;
 }
@@ -788,6 +874,7 @@ function refreshViewer(full = false) {
             <button type="button" class="dd-opt" role="menuitem" data-action="copy-card"><span class="ic"><svg><use href="#i-copy"/></svg></span><span class="lbl">Скопировать ссылку</span></button>
             <button type="button" class="dd-opt" role="menuitem" data-action="refresh-card"><span class="ic"><svg><use href="#i-refresh"/></svg></span><span class="lbl">Обновить цену и фото</span></button>
             <button type="button" class="dd-opt" role="menuitem" data-action="edit-card"><span class="ic"><svg><use href="#i-edit"/></svg></span><span class="lbl">Изменить</span></button>
+            ${imgs.length ? `<button type="button" class="dd-opt" role="menuitem" data-action="upload-photo">${c.uploadedPhoto ? 'Заменить своё фото' : 'Добавить своё фото'}</button>` : ''}
             <div class="dd-sep"></div>
             <button type="button" class="dd-opt danger" role="menuitem" data-action="delete-card"><span class="ic"><svg><use href="#i-trash"/></svg></span><span class="lbl">Удалить из подборки</span></button>
           </div>
@@ -796,7 +883,7 @@ function refreshViewer(full = false) {
       </div>
       <div class="track" id="track">${
         imgs.length
-          ? imgs.map((u, i) => `<div class="slide"><img src="${esc(u)}" alt="Фото ${i + 1}" ${i ? 'loading="lazy"' : ''} referrerpolicy="no-referrer" data-zoom="${i}"></div>`).join('')
+          ? imgs.map((u, i) => `<div class="slide"><img ${photoSource(u)} alt="Фото ${i + 1}" ${i ? 'loading="lazy"' : ''} referrerpolicy="no-referrer" data-zoom="${i}"></div>`).join('')
           : `<div class="slide">${placeholderHtml(c, false)}</div>`
       }</div>
       ${imgs.length > 1 ? `<button class="icon-btn nav prev" data-action="prev" aria-label="Предыдущее фото"><svg><use href="#i-left"/></svg></button>
@@ -804,7 +891,7 @@ function refreshViewer(full = false) {
       <span class="counter" id="counter">1 / ${imgs.length}</span>` : ''}
       </div>
       ${imgs.length > 1 ? `<div class="thumbs" id="thumbs">${(c.thumbs?.length === imgs.length ? c.thumbs : imgs)
-        .map((u, i) => `<button data-thumb="${i}" class="${i ? '' : 'active'}" aria-label="Фото ${i + 1}"><img src="${esc(u)}" alt="" loading="lazy" referrerpolicy="no-referrer"></button>`)
+        .map((u, i) => `<button data-thumb="${i}" class="${i ? '' : 'active'}" aria-label="Фото ${i + 1}"><img ${photoSource(u)} alt="" loading="lazy" referrerpolicy="no-referrer"></button>`)
         .join('')}</div>` : ''}
     </div>
     <div class="info">
@@ -813,12 +900,16 @@ function refreshViewer(full = false) {
       ${metaHtml(c)}
       ${votesHtml(c)}
       ${c.partial && missing ? `<div class="partial-note"><span class="msg">Нет ${missing}</span><button type="button" class="btn" data-action="edit-card" aria-label="Дополнить вручную" title="Дополнить вручную"><svg><use href="#i-edit"/></svg><span class="lbl">Дополнить</span></button></div>` : ''}
+      ${!imgs.length ? '<div class="row"><button type="button" class="btn" data-action="upload-photo">Добавить фото</button></div>' : ''}
       <div class="open-row">
-        <a class="btn primary" href="${esc(appHref(c))}" ${IS_ANDROID ? '' : 'target="_blank"'} rel="noopener"><svg><use href="#i-open"/></svg><span><span class="verb">Открыть в </span>${src.name}</span></a>
+        ${!imgs.length && verificationSources.has(c.source)
+          ? '<button type="button" class="btn primary" data-action="check-product"><svg><use href="#i-open"/></svg><span>Открыть проверку</span></button>'
+          : `<a class="btn primary" href="${esc(appHref(c))}" ${IS_ANDROID ? '' : 'target="_blank"'} rel="noopener"><svg><use href="#i-open"/></svg><span><span class="verb">Открыть в </span>${src.name}</span></a>`}
         <button type="button" class="icon-btn share" data-action="share-card" aria-label="Поделиться" title="Поделиться"><svg><use href="#i-share"/></svg></button>
       </div>
       <div class="updated">${c.priceNote ? `Цена ${esc(c.priceNote)} · ` : ''}обновлено ${ago(c.updatedAt)}</div>
     </div>`;
+  loadPrivatePhotos(body);
   const track = $('#track');
   track.addEventListener('scroll', onTrackScroll, { passive: true });
   if (keepIndex) requestAnimationFrame(() => goSlide(keepIndex, false));
@@ -856,7 +947,8 @@ function openLightbox(i) {
   const c = state.cards.find((x) => x.id === state.openId);
   if (!c?.images?.length) return;
   const t = $('#lbTrack');
-  t.innerHTML = c.images.map((u) => `<div class="slide"><img src="${esc(u)}" alt="" referrerpolicy="no-referrer"></div>`).join('');
+  t.innerHTML = c.images.map((u) => `<div class="slide"><img ${photoSource(u)} alt="" referrerpolicy="no-referrer"></div>`).join('');
+  loadPrivatePhotos(t);
   lightbox.showModal();
   requestAnimationFrame(() => (t.scrollLeft = i * t.clientWidth));
   const upd = () => ($('#lbCounter').textContent = `${Math.round(t.scrollLeft / t.clientWidth) + 1} / ${c.images.length}`);
@@ -904,9 +996,13 @@ function openEdit(id) {
   f.oldPrice.value = c.oldPrice ?? '';
   f.rating.value = c.rating ?? '';
   f.reviews.value = c.reviews ?? '';
-  f.images.value = c.edited.includes('images') ? c.images.join('\n') : '';
+  f.images.value = editedPhotoLinks(c);
   editDialog.showModal();
   autosize(f.images);
+}
+
+function editedPhotoLinks(card) {
+  return card.edited.includes('images') ? card.images.filter((url) => !privatePhoto.test(url)).join('\n') : '';
 }
 
 async function saveEdit() {
@@ -921,7 +1017,7 @@ async function saveEdit() {
     if (val(k) !== was) overrides[k] = val(k);
   }
   const imgs = val('images');
-  if (imgs !== (c.edited.includes('images') ? c.images.join('\n') : '')) overrides.images = imgs;
+  if (imgs !== editedPhotoLinks(c)) overrides.images = imgs;
   if (!Object.keys(overrides).length) return;
   try {
     const r = await api(`/api/cards/${id}`, { method: 'PATCH', body: { overrides } });
@@ -1042,6 +1138,7 @@ function saveSettings() {
   state.api = api;
   store.set('api_override', api === normalizeApi(CFG.apiUrl) ? '' : api);
   if (changed) {
+    clearPrivatePhotos();
     state.accessToken = store.get('access:' + state.api, '');
     state.unlocked = false;
     state.cards = [];
@@ -1205,9 +1302,6 @@ function toast(msg) {
 /* ============================== События =============================== */
 
 function bind() {
-  if (IS_ANDROID) {
-    $('#productBookmarkletHint').textContent = 'Откройте товар в Chrome и пройдите проверку, если она появится. Наберите «Вместе» в адресной строке и выберите закладку в подсказках. Скопируйте данные и вставьте их сюда.';
-  }
   document.addEventListener('click', async (e) => {
     const vote = e.target.closest('[data-vote]');
     if (vote) {
@@ -1239,8 +1333,14 @@ function bind() {
     switch (actEl.dataset.action) {
       case 'add':
         return openAdd();
-      case 'copy-product-bookmarklet':
-        return copyProductBookmarklet();
+      case 'check-product':
+        return actEl.dataset.url
+          ? openProductCheck(actEl.dataset.url, actEl.dataset.cardId)
+          : openProductCheck(c?.url, c?.id);
+      case 'copy-verification-url':
+        return copyVerificationUrl();
+      case 'upload-photo':
+        return selectPhoto(actEl.dataset.cardId || c?.id);
       case 'paste': {
         const t = await readClipboard();
         if (t == null) return;
@@ -1251,8 +1351,7 @@ function bind() {
         const t = await readClipboard();
         if (t == null) return openAdd();
         openAdd(t);
-        const { links, invalid } = readAddItems(t);
-        if (!invalid && links.length && links.every((item) => !item.browserData)) addLinks(t);
+        if (extractLinks(t).links.length) addLinks(t);
         return;
       }
       case 'settings':
@@ -1296,10 +1395,6 @@ function bind() {
         return lightbox.close();
       case 'toggle-setup':
         return setSetupOpen(!$('#setupBox').classList.contains('open'));
-      case 'toggle-acc': {
-        const box = actEl.closest('.accordion');
-        return setAccordionOpen(box, !box.classList.contains('open'));
-      }
       case 'test-api':
         return testApi($('#settingsForm').apiUrl.value);
       case 'copy-share':
@@ -1348,6 +1443,8 @@ function bind() {
     d.addEventListener('click', (e) => e.target === d && d.close());
 
   addText.addEventListener('input', updateParseInfo);
+  photoInput.addEventListener('change', uploadPhoto);
+  verificationDialog.addEventListener('close', () => $('#verificationFrame').removeAttribute('src'));
   accessDialog.addEventListener('cancel', (e) => e.preventDefault());
   accessForm.addEventListener('submit', signIn);
   $('#addForm').addEventListener('submit', (e) => {
@@ -1359,11 +1456,10 @@ function bind() {
   document.addEventListener('paste', (e) => {
     if (e.target.closest('input, textarea') || document.querySelector('dialog[open]') || !state.api) return;
     const text = e.clipboardData?.getData('text') || '';
-    const { links, invalid } = readAddItems(text);
-    if (!links.length && !invalid) return;
+    if (!extractLinks(text).links.length) return;
     e.preventDefault();
     openAdd(text);
-    if (!invalid && links.every((item) => !item.browserData)) addLinks(text);
+    addLinks(text);
   });
   $('#boardsForm').addEventListener('submit', (e) => {
     e.preventDefault();

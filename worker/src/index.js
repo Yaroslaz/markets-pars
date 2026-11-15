@@ -1,8 +1,10 @@
 import { parseProduct, productFromBrowser, mergeBrowserProduct, extractUrls, HttpError } from './parsers.js';
 import { accessConfig, requireSession, signIn } from './access.js';
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const STALE_MS = 6 * 60 * 60 * 1000; // через сколько обновлять цену/рейтинг в фоне
+const MAX_PHOTO_BYTES = 512 * 1024;
+const CARD_SELECT = 'SELECT c.*, (SELECT version FROM card_photos WHERE card_id = c.id) AS photo_version FROM cards c';
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS cards (
@@ -23,6 +25,11 @@ const SCHEMA = [
     kind TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     PRIMARY KEY (card_id, voter, kind)
+  )`,
+  `CREATE TABLE IF NOT EXISTS card_photos (
+    card_id TEXT PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
+    version TEXT NOT NULL,
+    bytes BLOB NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_cards_board ON cards (board, created_at)`,
   `CREATE TABLE IF NOT EXISTS boards (
@@ -92,10 +99,12 @@ async function route(request, env, ctx) {
   if (mb && method === 'PATCH') return renameBoard(env, mb[1], await body(request));
   if (mb && method === 'DELETE') return deleteBoard(env, mb[1]);
 
-  const m = path.match(/^\/api\/cards\/([\w-]+)(\/(vote|refresh))?$/);
+  const m = path.match(/^\/api\/cards\/([\w-]+)(\/(vote|refresh|photo))?$/);
   if (m) {
     const id = m[1];
     const action = m[3];
+    if (action === 'photo' && method === 'GET') return getPhoto(env, id, url.searchParams.get('v'));
+    if (action === 'photo' && method === 'POST') return savePhoto(env, id, request);
     if (action === 'vote' && method === 'POST') return vote(env, id, await body(request));
     if (action === 'refresh' && method === 'POST') return json({ card: await refreshCard(env, id) });
     if (!action && method === 'PATCH') return editCard(env, id, await body(request));
@@ -174,7 +183,7 @@ async function deleteBoard(env, id) {
 
 async function listCards(env, ctx, url) {
   const b = board(url.searchParams.get('board'));
-  const { results: rows } = await env.DB.prepare('SELECT * FROM cards WHERE board = ? ORDER BY created_at DESC LIMIT 500')
+  const { results: rows } = await env.DB.prepare(CARD_SELECT + ' WHERE c.board = ? ORDER BY c.created_at DESC LIMIT 500')
     .bind(b)
     .all();
   const likes = await likesFor(env, rows.map((r) => r.id));
@@ -188,9 +197,48 @@ async function listCards(env, ctx, url) {
 }
 
 async function getCard(env, id) {
-  const row = await env.DB.prepare('SELECT * FROM cards WHERE id = ?').bind(id).first();
+  const row = await env.DB.prepare(CARD_SELECT + ' WHERE c.id = ?').bind(id).first();
   if (!row) throw new HttpError(404, 'Карточка не найдена');
   return present(row, await likesFor(env, [id]));
+}
+
+async function savePhoto(env, id, request) {
+  if (request.headers.get('Content-Type') !== 'image/jpeg' || !request.body) {
+    throw new HttpError(415, 'Поддерживаются фотографии в формате JPEG');
+  }
+  const reader = request.body.getReader();
+  const bytes = new Uint8Array(MAX_PHOTO_BYTES);
+  let length = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (length + value.length > bytes.length) {
+      await reader.cancel();
+      throw new HttpError(413, 'Фото слишком большое');
+    }
+    bytes.set(value, length);
+    length += value.length;
+  }
+  if (length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff ||
+      bytes[length - 2] !== 0xff || bytes[length - 1] !== 0xd9) {
+    throw new HttpError(415, 'Файл не является фотографией JPEG');
+  }
+  const result = await env.DB.prepare(
+    `INSERT INTO card_photos (card_id, version, bytes)
+     SELECT id, ?, ? FROM cards WHERE id = ?
+     ON CONFLICT(card_id) DO UPDATE SET version = excluded.version, bytes = excluded.bytes`
+  ).bind(crypto.randomUUID(), bytes.buffer.slice(0, length), id).run();
+  if (!result.meta.changes) throw new HttpError(404, 'Карточка не найдена');
+  return json({ card: await getCard(env, id) });
+}
+
+async function getPhoto(env, id, version) {
+  const row = await env.DB.prepare('SELECT bytes FROM card_photos WHERE card_id = ? AND version = ?')
+    .bind(id, version).first();
+  if (!row) throw new HttpError(404, 'Фото не найдено');
+  return new Response(new Uint8Array(row.bytes), { headers: {
+    ...CORS, 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+  } });
 }
 
 async function addCard(env, input, fromBrowser = false) {
@@ -330,6 +378,9 @@ function present(row, likes) {
   const overrides = JSON.parse(row.overrides || '{}');
   const card = { ...data, ...overrides };
   if (overrides.images) card.thumbs = overrides.images;
+  if (row.photo_version) {
+    card.uploadedPhoto = `/api/cards/${row.id}/photo?v=${row.photo_version}`;
+  }
   return {
     id: row.id,
     ...card,

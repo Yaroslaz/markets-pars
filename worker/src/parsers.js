@@ -149,10 +149,10 @@ async function parseWb(url) {
   const nm = Number(m[1]);
   const canonical = `https://www.wildberries.ru/catalog/${nm}/detail.aspx`;
   const found = await wbFindBase(nm);
-  if (!found) throw new HttpError(404, 'Wildberries: товар не найден');
+  if (!found) return partialFromSlug('wb', String(nm), canonical, '');
   const { base, card } = found;
 
-  const count = Math.min(card?.media?.photo_count || 1, 30);
+  const count = Math.min(card?.media?.photo_count ?? 1, 30);
   const images = [];
   const thumbs = [];
   for (let i = 1; i <= count; i++) {
@@ -173,7 +173,7 @@ async function parseWb(url) {
     reviews: null,
     images,
     thumbs,
-    partial: false,
+    partial: !images.length,
   };
 
   const [detail, feedbacks, history] = await Promise.all([
@@ -251,29 +251,25 @@ function ymCanonical(url) {
 async function parseYm(url) {
   const id = ymIdFromUrl(url);
   const canonical = ymCanonical(url);
-  let html = '';
-  try {
-    const res = await fetch(canonical, { headers: HEADERS, signal: AbortSignal.timeout(6500) });
-    if (res.ok && (!res.url || (detectSource(res.url) === 'ym' && ymIdFromUrl(res.url) === id))) html = await res.text();
-    else await res.body?.cancel();
-  } catch {}
-  const product = findLdProduct(html);
-  const meta = pageMeta(html);
   const slug = new URL(canonical).pathname.split('/')[2];
   const fallback = partialFromSlug('ym', id, canonical, slug);
-  const ogUrl = meta.get('og:url');
-  const sameProduct = ogUrl && detectSource(ogUrl) === 'ym' && ymIdFromUrl(ogUrl) === id;
-  const photos = imageLinks([ ...ymGallery(html), ...[].concat(product?.image || []), meta.get('og:image'), meta.get('og:image:secure_url') ], canonical)
-    .filter((image) => marketplacePhoto(new URL(image), 'ym'));
+  const page = await readProductPage(canonical, 'ym', id, ymIdFromUrl);
+  if (!page) return fallback;
+  const { html, gallery, metadata, heading, pageUrl, matchesId } = page;
+  const product = findLdProduct(html, (item) => matchesId(item.url ?? item.mainEntityOfPage?.['@id'] ?? item['@id']) !== false);
+  const meta = pageMeta(html);
+  const sameProduct = matchesId(meta.get('og:url') ?? metadata.canonical);
+  if (sameProduct === false) return fallback;
+  const photos = imageLinks([...ymGallery(html), ...gallery, ...[].concat(product?.image || []), ...metadata.images], pageUrl, 'ym');
 
-  if (!product && (!photos.length || (!sameProduct && meta.get('og:type') !== 'product'))) return fallback;
+  if (!product && (!photos.length || (!sameProduct && !gallery.length && meta.get('og:type') !== 'product'))) return fallback;
   const offer = [].concat(product?.offers || [])[0] || {};
   const rating = product?.aggregateRating || {};
   const oldPrice = matchNum(html, /"oldPrice"\s*:\s*\{[^}]*?"value"\s*:\s*"?(\d+)/) || null;
   const price = num(offer.price ?? offer.lowPrice) ?? rubleAmount(meta.get('product:price:amount'), meta.get('product:price:currency'));
   return {
     ...fallback,
-    title: product?.name || meta.get('og:title') || fallback.title,
+    title: product?.name || meta.get('og:title') || heading || fallback.title,
     brand: typeof product?.brand === 'object' ? product.brand?.name : product?.brand || null,
     price,
     oldPrice: oldPrice && price && oldPrice > price ? oldPrice : null,
@@ -380,13 +376,14 @@ function marketplacePhoto(image, source) {
      /\/get-(?:mpic|marketpic|marketpicturereading|marketpicplus)\//.test(image.pathname));
 }
 
-function imageLinks(values, pageUrl) {
+function imageLinks(values, pageUrl, source) {
   return uniq(values.flatMap((image) => {
     const value = image?.contentUrl ?? image?.url ?? image;
     if (typeof value !== 'string' || !value.trim()) return [];
     try {
       const link = new URL(value, pageUrl);
-      return link.protocol === 'https:' && !link.username && !link.password ? [link.href] : [];
+      return link.protocol === 'https:' && !link.username && !link.password &&
+        (!source || marketplacePhoto(link, source)) ? [link.href] : [];
     } catch { return []; }
   })).slice(0, 30);
 }
@@ -436,42 +433,118 @@ function aliShareData(inputUrl, text) {
 
 /* ------------------------------- Общее ------------------------------- */
 
-async function tryPlainHtml(url, source, id) {
-  const productId = source === 'ozon' ? ozonId : aliId;
-  const pageProductId = (value) => {
-    if (typeof value !== 'string' || !value) return null;
+async function readProductPage(url, source, id, productId) {
+  const matchesId = (value) => {
+    if (typeof value !== 'string' || !value) return undefined;
     try {
       const page = new URL(value, url).href;
-      return detectSource(page) === source ? productId(page) : null;
-    } catch { return null; }
+      const candidate = detectSource(page) === source ? productId(page) : null;
+      return candidate ? candidate === id : undefined;
+    } catch { return undefined; }
   };
-
-  let html;
-  let pageUrl;
   try {
-    const res = await fetch(url, { headers: HEADERS, redirect: 'follow', signal: AbortSignal.timeout(5000) });
-    pageUrl = res.url || url;
-    if (!res.ok || !(res.headers.get('content-type') || '').includes('html') || pageProductId(pageUrl) !== id) {
+    const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(6500) });
+    const pageUrl = res.url || url;
+    if (!res.ok || !(res.headers.get('content-type') || '').includes('html') || matchesId(pageUrl) !== true || !res.body) {
       await res.body?.cancel();
       return null;
     }
-    html = await res.text();
+    const metadata = { canonical: '', images: [] };
+    const gallery = [];
+    let heading = '';
+    const rewriter = new HTMLRewriter()
+      .on('meta', { element(el) {
+        const key = (el.getAttribute('property') || el.getAttribute('name') || el.getAttribute('itemprop') || '').toLowerCase();
+        if (/^(?:og:image(?::(?:url|secure_url))?|twitter:image(?::src)?|image)$/.test(key)) {
+          const content = el.getAttribute('content');
+          if (content && metadata.images.length < 20) metadata.images.push(content);
+        }
+      } })
+      .on('link', { element(el) {
+        const rel = el.getAttribute('rel');
+        if (rel === 'canonical') metadata.canonical = el.getAttribute('href');
+        if (rel === 'image_src' && metadata.images.length < 20) metadata.images.push(el.getAttribute('href'));
+      } })
+      .on('h1', { text(chunk) {
+        if (heading.length < 400) heading += chunk.text;
+      } });
+    const containers = source === 'ozon'
+      ? ['[data-widget="webGallery"]', '[data-widget="webProductGallery"]']
+      : source === 'ym' ? ['[data-auto="gallery"]', '[data-auto="product-gallery"]', '[data-zone-name="productGallery"]'] : [];
+    for (const container of containers) {
+      rewriter.on(container + ' img', { element(el) {
+        if (gallery.length >= 50) return;
+        const srcset = el.getAttribute('srcset') || el.getAttribute('data-srcset') || '';
+        const largest = srcset.split(',').at(-1)?.trim().split(/\s+/)[0];
+        gallery.push(el.getAttribute('data-original'), largest, el.getAttribute('data-src'), el.getAttribute('src'));
+      } });
+    }
+    if (source === 'ozon') {
+      rewriter.on('[id^="state-webGallery"][data-state]', { element(el) {
+        const state = el.getAttribute('data-state');
+        if (state && state.length < 220000) gallery.push(...galleryStateImages(state));
+      } });
+    }
+    const reader = rewriter.transform(res).body.getReader();
+    const decoder = new TextDecoder();
+    let html = '';
+    let bytes = 0;
+    const maxBytes = 4 * 1024 * 1024;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      html += decoder.decode(value.subarray(0, maxBytes - bytes), { stream: true });
+      bytes += value.length;
+      if (bytes >= maxBytes) {
+        await reader.cancel();
+        break;
+      }
+    }
+    html += decoder.decode();
+    return { html, gallery: imageLinks(gallery, pageUrl, source), metadata, heading: decodeHtml(heading).trim(), pageUrl, matchesId };
   } catch {
     return null;
   }
+}
+
+function galleryStateImages(raw) {
+  let state;
+  for (const candidate of [raw, decodeHtml(raw)]) {
+    try {
+      state = JSON.parse(candidate);
+      break;
+    } catch {}
+  }
+  const nodes = [state];
+  const photos = [];
+  for (let i = 0; nodes.length && i < 1800 && photos.length < 30; i++) {
+    const value = nodes.pop();
+    if (typeof value === 'string' && /^(?:https:)?\/\/[^ ]+\.(?:avif|jpe?g|png|webp)(?:[?#].*)?$/i.test(value)) {
+      photos.push(value);
+    } else if (value && typeof value === 'object') {
+      nodes.push(...Object.values(value).reverse().slice(0, 1800));
+    }
+  }
+  return photos;
+}
+
+async function tryPlainHtml(url, source, id) {
+  const page = await readProductPage(url, source, id, source === 'ozon' ? ozonId : aliId);
+  if (!page) return null;
+  const { html, gallery, metadata, heading, pageUrl, matchesId } = page;
   const meta = pageMeta(html);
-  const ogId = pageProductId(meta.get('og:url'));
-  if (ogId && ogId !== id) return null;
+  const sameProduct = matchesId(meta.get('og:url') ?? metadata.canonical);
+  if (sameProduct === false) return null;
   let otherProduct = false;
   const product = findLdProduct(html, (item) => {
-    const itemId = pageProductId(item.url ?? item.mainEntityOfPage?.['@id'] ?? item.mainEntityOfPage ?? item['@id']);
-    if (!itemId || itemId === id) return true;
+    const match = matchesId(item.url ?? item.mainEntityOfPage?.['@id'] ?? item.mainEntityOfPage ?? item['@id']);
+    if (match !== false) return true;
     otherProduct = true;
     return false;
   });
-  const name = product?.name ?? meta.get('og:title');
-  const images = imageLinks([ ...[].concat(product?.image || []), meta.get('og:image'), meta.get('og:image:secure_url') ], pageUrl);
-  const verifiedPhoto = ogId === id && images.some((image) => marketplacePhoto(new URL(image), source));
+  const name = product?.name || meta.get('og:title') || heading;
+  const images = imageLinks([...gallery, ...[].concat(product?.image || []), ...metadata.images], pageUrl, source);
+  const verifiedPhoto = images.length && (sameProduct || gallery.length);
   if (typeof name !== 'string' || !name.trim() || (!product && (otherProduct || (!verifiedPhoto && meta.get('og:type') !== 'product')))) return null;
   const offerPrices = [].concat(product?.offers || []).map((offer) => rubleAmount(offer?.price ?? offer?.lowPrice, offer?.priceCurrency));
   const price = offerPrices.find((value) => value != null)
