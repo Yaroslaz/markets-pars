@@ -97,7 +97,7 @@ function copyOpenProduct(prefix) {
   name.textContent = title || 'Карточка товара';
   const status = document.createElement('p');
   status.setAttribute('role', 'status');
-  status.textContent = [price === null ? '' : price + ' ₽', images.length ? 'Фото: ' + images.length : ''].filter(Boolean).join(' · ');
+  status.textContent = [price === null ? '' : price + ' ₽', images.length ? images.length + ' фото' : ''].filter(Boolean).join(' · ');
   const field = document.createElement('textarea');
   field.setAttribute('aria-label', 'Данные товара');
   field.readOnly = true;

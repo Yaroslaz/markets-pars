@@ -599,7 +599,8 @@ async function addLinks(text) {
       const li = rows[i];
       try {
         const { url, browserData } = links[i];
-        const r = await api('/api/cards', { method: 'POST', body: { board, url, shareText, browserData } });
+        const path = browserData ? '/api/cards/import' : '/api/cards';
+        const r = await api(path, { method: 'POST', body: { board, url, shareText, browserData } });
         if (state.board === board) upsertCard(r.card);
         if (marketplaceLink && r.card.partial && (r.card.price == null || !r.card.images?.length)) {
           incompleteUrl = r.card.url;
@@ -634,7 +635,7 @@ async function addLinks(text) {
       updateParseInfo();
       $('#parseInfo').textContent = 'Карточка сохранена. Откройте товар, чтобы перенести недостающие данные.';
     }
-    $('#productImportHelp').open = true;
+    setAccordionOpen($('#productImportHelp'), true);
   } else if (!failed && addText.value === text) {
     addText.value = '';
     setTimeout(() => addDialog.open && !addText.value && addDialog.close(), 700);
@@ -926,11 +927,11 @@ function openSettings() {
   settingsDialog.showModal();
 }
 
-function setSetupOpen(open) {
-  const box = $('#setupBox');
+function setAccordionOpen(box, open) {
   box.classList.toggle('open', open);
   $('.acc-head', box).setAttribute('aria-expanded', open);
 }
+const setSetupOpen = (open) => setAccordionOpen($('#setupBox'), open);
 
 async function testApi(url) {
   const s = $('#apiStatus');
@@ -1209,6 +1210,10 @@ function bind() {
         return lightbox.close();
       case 'toggle-setup':
         return setSetupOpen(!$('#setupBox').classList.contains('open'));
+      case 'toggle-acc': {
+        const box = actEl.closest('.accordion');
+        return setAccordionOpen(box, !box.classList.contains('open'));
+      }
       case 'test-api':
         return testApi($('#settingsForm').apiUrl.value);
       case 'copy-share':

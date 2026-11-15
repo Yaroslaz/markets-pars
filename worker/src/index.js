@@ -75,6 +75,7 @@ async function route(request, env, ctx) {
 
   if (path === '/api/cards' && method === 'GET') return listCards(env, ctx, url);
   if (path === '/api/cards' && method === 'POST') return addCard(env, await body(request));
+  if (path === '/api/cards/import' && method === 'POST') return addCard(env, await body(request), true);
   if (path === '/api/parse' && method === 'POST') {
     const { url: link, shareText } = await body(request);
     return json({ product: await parseProduct(firstUrl(link), shareText ?? link) });
@@ -187,10 +188,10 @@ async function getCard(env, id) {
   return present(row, await likesFor(env, [id]));
 }
 
-async function addCard(env, input) {
+async function addCard(env, input, fromBrowser = false) {
   const b = board(input.board);
   const link = firstUrl(input.url);
-  const imported = input.browserData == null ? null : productFromBrowser(link, input.browserData);
+  const imported = (fromBrowser || input.browserData != null) ? productFromBrowser(link, input.browserData) : null;
   const product = imported ? imported.product : await parseProduct(link, input.shareText ?? input.url);
   const now = Date.now();
   const id = crypto.randomUUID().replace(/-/g, '').slice(0, 16);

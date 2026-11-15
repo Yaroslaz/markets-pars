@@ -330,6 +330,9 @@ function aliId(url) {
 }
 
 export function productFromBrowser(link, details) {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) {
+    throw new HttpError(400, 'Нужны данные товара из браузера');
+  }
   const source = detectSource(link);
   const url = source && new URL(link);
   const ozon = source === 'ozon';

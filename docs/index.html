@@ -117,16 +117,18 @@
         <button type="button" class="btn paste" data-action="paste" title="Вставить из буфера обмена" aria-label="Вставить из буфера обмена"><svg><use href="#i-paste"/></svg><span>Вставить</span></button>
         <button type="submit" class="btn primary grow" value="submit"><svg><use href="#i-plus"/></svg><span>Добавить</span></button>
       </div>
-      <details class="import-help" id="productImportHelp">
-        <summary>Импорт из Ozon и AliExpress</summary>
-        <div>
-          <p class="hint">В Safari или Chrome создайте закладку «Вместе». Откройте её настройки и вставьте код в поле адреса.</p>
-          <button type="button" class="btn" data-action="copy-product-bookmarklet">Скопировать код закладки</button>
+      <div class="accordion import-help" id="productImportHelp">
+        <button type="button" class="acc-head" aria-expanded="false" aria-controls="productImportBody" data-action="toggle-acc">
+          <svg class="acc-ic"><use href="#i-bag"/></svg><span>Импорт из Ozon и AliExpress</span><svg class="acc-chev"><use href="#i-chevron"/></svg>
+        </button>
+        <div class="acc-body" id="productImportBody"><div>
+          <p class="hint">В Safari или Chrome создайте закладку «Вместе». Отредактируйте её и вставьте скопированный код вместо адреса.</p>
+          <button type="button" class="btn" data-action="copy-product-bookmarklet"><svg><use href="#i-copy"/></svg><span>Скопировать код закладки</span></button>
           <textarea id="productBookmarkletCode" rows="2" readonly hidden aria-label="Код закладки"></textarea>
           <p class="hint" id="productBookmarkletHint">Откройте товар в том же браузере. Если магазин покажет проверку, пройдите её. Запустите закладку, затем скопируйте данные и вставьте их сюда.</p>
-          <a class="btn" id="productImportLink" target="_blank" rel="noopener" hidden>Открыть товар</a>
-        </div>
-      </details>
+          <a class="btn" id="productImportLink" target="_blank" rel="noopener" hidden><svg><use href="#i-open"/></svg><span>Открыть товар</span></a>
+        </div></div>
+      </div>
     </form>
   </dialog>
 
