@@ -267,6 +267,16 @@ const nativeApp = (() => {
         port.postMessage(JSON.stringify({ type: 'read', id, url, script: '(' + readOpenProduct + ')()' }));
       });
     },
+    // Текст из буфера обмена: в WebView у сайта нет к нему доступа, а у приложения есть.
+    // Расширение такие просьбы отклоняет сразу; на всякий случай ждём не больше 1,5 с.
+    clipboard() {
+      return new Promise((resolve) => {
+        const id = ++seq;
+        const timer = setTimeout(() => (pending.delete(id), resolve(null)), 1500);
+        pending.set(id, (msg) => (clearTimeout(timer), resolve(msg?.ok && typeof msg.text === 'string' ? msg.text : null)));
+        port.postMessage(JSON.stringify({ type: 'clipboard', id }));
+      });
+    },
   };
 })();
 
@@ -915,6 +925,8 @@ function updateParseInfo() {
 }
 
 async function readClipboard() {
+  const fromApp = nativeApp ? await nativeApp.clipboard() : null;
+  if (fromApp != null) return fromApp;
   try {
     if (!navigator.clipboard?.readText) throw 0;
     return await navigator.clipboard.readText();

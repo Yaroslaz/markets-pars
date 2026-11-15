@@ -113,6 +113,7 @@ public class MainActivity extends Activity {
                         String data = message.getData();
                         if (!isMainFrame || data == null) return;
                         if (data.startsWith("{\"type\":\"theme\"") || data.startsWith("{\"type\":\"bars\"")) onLookMessage(data);
+                        else if (data.startsWith("{\"type\":\"clipboard\"")) reply.postMessage(clipboardReply(data));
                         else reader.handle(data, reply);
                     });
         }
@@ -226,6 +227,28 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             Toast.makeText(this, R.string.no_app, Toast.LENGTH_SHORT).show();
         }
+    }
+
+    /**
+     * Текст из буфера обмена для кнопки «Вставить» на сайте: WebView не даёт странице читать буфер,
+     * а приложению на экране Android это разрешает.
+     */
+    private String clipboardReply(String message) {
+        org.json.JSONObject out = new org.json.JSONObject();
+        try {
+            out.put("id", new org.json.JSONObject(message).optInt("id"));
+            android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            android.content.ClipData clip = cm != null ? cm.getPrimaryClip() : null;
+            CharSequence text = clip != null && clip.getItemCount() > 0 ? clip.getItemAt(0).coerceToText(this) : null;
+            out.put("ok", text != null);
+            if (text != null) out.put("text", text.toString().substring(0, Math.min(text.length(), 20000)));
+        } catch (Exception e) {
+            try {
+                out.put("ok", false);
+            } catch (org.json.JSONException ignored) {
+            }
+        }
+        return out.toString();
     }
 
     /** Сообщения сайта о внешнем виде: {"type":"theme","dark":…} — тема, {"type":"bars","dark":true|null} — тёмный слой (галерея). */
