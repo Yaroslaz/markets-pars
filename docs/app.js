@@ -48,6 +48,7 @@ const store = {
 const state = {
   api: '',
   board: 'main',
+  boards: [],
   role: '', // m — парень, f — девушка
   cards: [],
   filter: 'all', // all | both
@@ -290,7 +291,8 @@ function render() {
   const grid = $('#grid');
   const empty = $('#empty');
   updateSum();
-  $('#toolbar').hidden = !state.api || (!state.cards.length && !state.loading);
+  $('#toolbar').hidden = !state.api;
+  renderBoardName();
 
   if (!state.api) {
     grid.innerHTML = '';
@@ -399,9 +401,9 @@ function filterMenu(root) {
     </div>`;
   const btn = $('.dd-btn', root);
   const sync = () => {
-    const src = state.source ? SOURCES[state.source].name : 'Все магазины';
-    const sort = (SORTS.find((x) => x[0] === state.sort) || SORTS[0])[2];
-    btn.innerHTML = `${state.source ? fav(state.source) : '<svg><use href="#i-filter"/></svg>'}<span class="v">${esc(src)} <small>· ${esc(sort)}</small></span><svg class="chev"><use href="#i-chevron"/></svg>`;
+    const changed = state.source || state.sort !== 'new';
+    btn.innerHTML = `${state.source ? fav(state.source) : '<svg><use href="#i-filter"/></svg>'}${changed ? '<i class="badge"></i>' : ''}`;
+    btn.title = `${state.source ? SOURCES[state.source].name : 'Все магазины'}, ${(SORTS.find((x) => x[0] === state.sort) || SORTS[0])[1].toLowerCase()}`;
     $$('.dd-opt', root).forEach((o) => o.setAttribute('aria-checked', o.dataset.v === state[o.dataset.k]));
   };
   const close = () => {
@@ -830,8 +832,9 @@ function askRole() {
 function openSettings() {
   const f = $('#settingsForm');
   $$('#roleSwitch [data-role]').forEach((b) => b.classList.toggle('active', b.dataset.role === state.role));
+  markFont();
+  previewFonts();
   f.apiUrl.value = state.api;
-  f.board.value = state.board === 'main' ? '' : state.board;
   $('#deployLink').href = deployUrl();
   setSetupOpen(!state.api);
   $('#apiStatus').textContent = '';
@@ -865,17 +868,156 @@ async function testApi(url) {
 function saveSettings() {
   const f = $('#settingsForm');
   const api = normalizeApi(f.apiUrl.value);
-  const board = /^[\w-]{1,40}$/.test(f.board.value.trim()) ? f.board.value.trim() : 'main';
-  const changed = api !== state.api || board !== state.board;
+  const changed = api !== state.api;
   state.api = api;
-  state.board = board;
   store.set('api', api === normalizeApi(CFG.apiUrl) ? '' : api);
-  store.set('board', board === 'main' ? '' : board);
   if (changed) {
     state.cards = [];
+    state.boards = [];
     cardSig.clear();
     loadCards();
+    loadBoards();
   }
+}
+
+/* ============================== Подборки ============================== */
+
+const boardsDialog = $('#boardsDialog');
+const currentBoard = () => state.boards.find((b) => b.id === state.board);
+
+function renderBoardName() {
+  const b = currentBoard();
+  $('#boardName').textContent = b ? b.name : state.board === 'main' ? 'Основная' : state.board;
+}
+
+async function loadBoards() {
+  if (!state.api) return;
+  try {
+    const r = await api('/api/boards');
+    state.boards = r.boards;
+    // Подборки из ссылки ещё нет в списке (например, её удалили) — переходим на первую
+    if (!currentBoard() && state.boards.length && !state.cards.length) switchBoard(state.boards[0].id, false);
+  } catch {}
+  renderBoardName();
+  if (boardsDialog.open) renderBoards();
+}
+
+function renderBoards() {
+  const list = $('#boardsList');
+  const many = state.boards.length > 1;
+  list.innerHTML = state.boards
+    .map((b) => {
+      // для текущей подборки берём живые данные с экрана
+      const live = b.id === state.board && !state.loading;
+      const count = live ? state.cards.length : b.count;
+      const total = live ? state.cards.reduce((a, c) => a + (c.price || 0), 0) : b.total;
+      const meta = count ? `${count} ${plural(count, 'товар', 'товара', 'товаров')}${total ? ' · ' + rub(total) : ''}` : 'пусто';
+      return `<li class="board-row ${b.id === state.board ? 'current' : ''}" data-board="${esc(b.id)}">
+        <button type="button" class="board-pick" data-action="pick-board"><span class="txt"><span class="bn">${esc(b.name)}</span><span class="bm">${meta}</span></span><svg class="ck"><use href="#i-check"/></svg></button>
+        <button type="button" class="icon-btn ghost" data-action="rename-board" aria-label="Переименовать" title="Переименовать"><svg><use href="#i-edit"/></svg></button>
+        ${many ? `<button type="button" class="icon-btn ghost danger" data-action="delete-board" aria-label="Удалить" title="Удалить"><svg><use href="#i-trash"/></svg></button>` : ''}
+      </li>`;
+    })
+    .join('');
+}
+
+function openBoards() {
+  if (!state.api) return openSettings();
+  renderBoards();
+  $('#boardsForm').boardName.value = '';
+  boardsDialog.showModal();
+  loadBoards();
+}
+
+function switchBoard(id, notify = true) {
+  if (id === state.board) return;
+  state.board = id;
+  store.set('board', id === 'main' ? '' : id);
+  state.cards = [];
+  state.source = '';
+  cardSig.clear();
+  setFilter('all');
+  renderBoardName();
+  loadCards();
+  if (notify) toast(`Подборка «${currentBoard()?.name || id}»`);
+}
+
+function pickBoard(id) {
+  switchBoard(id);
+  boardsDialog.close();
+}
+
+async function createBoard() {
+  const input = $('#boardsForm').boardName;
+  const name = input.value.trim();
+  if (!name) return input.focus();
+  try {
+    const r = await api('/api/boards', { method: 'POST', body: { name } });
+    state.boards.push(r.board);
+    input.value = '';
+    pickBoard(r.board.id);
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+function startRename(row) {
+  const b = state.boards.find((x) => x.id === row.dataset.board);
+  row.innerHTML = `<input class="rename" value="${esc(b.name)}" maxlength="60" aria-label="Новое название">
+    <button type="button" class="icon-btn ghost" data-action="save-board" aria-label="Сохранить" title="Сохранить"><svg><use href="#i-check"/></svg></button>`;
+  const input = $('.rename', row);
+  input.focus();
+  input.select();
+}
+
+async function saveRename(row) {
+  const id = row.dataset.board;
+  const name = $('.rename', row)?.value.trim();
+  const b = state.boards.find((x) => x.id === id);
+  if (!name || name === b.name) return renderBoards();
+  try {
+    await api(`/api/boards/${id}`, { method: 'PATCH', body: { name } });
+    b.name = name;
+    renderBoards();
+    renderBoardName();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+async function removeBoard(id) {
+  const b = state.boards.find((x) => x.id === id);
+  if (!b || !confirm(`Удалить подборку «${b.name}» вместе со всеми товарами и лайками?`)) return;
+  try {
+    await api(`/api/boards/${id}`, { method: 'DELETE' });
+    state.boards = state.boards.filter((x) => x.id !== id);
+    if (state.board === id) switchBoard(state.boards[0].id, false);
+    renderBoards();
+    toast('Подборка удалена');
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+/* =============================== Шрифты =============================== */
+
+function setFont(key) {
+  key = window.MP_applyFont(key);
+  store.set('font', key);
+  markFont();
+}
+function markFont() {
+  const cur = document.documentElement.dataset.font;
+  $$('#fontSwitch [data-font]').forEach((b) => b.classList.toggle('active', b.dataset.font === cur));
+}
+// Чтобы на кнопках выбора было видно оба шрифта, подгружаем их заголовочные начертания
+function previewFonts() {
+  if ($('#fontPreview')) return;
+  const l = document.createElement('link');
+  l.id = 'fontPreview';
+  l.rel = 'stylesheet';
+  l.href = 'https://fonts.googleapis.com/css2?family=Montserrat+Alternates:wght@700&family=Geologica:wght@700&display=swap&text=' + encodeURIComponent('ИгривоСвежо');
+  document.head.appendChild(l);
 }
 
 /* ================================ Тост ================================ */
@@ -899,6 +1041,8 @@ function bind() {
       const id = vote.closest('[data-id]')?.dataset.id || state.openId;
       return toggleVote(id, vote.dataset.vote, vote);
     }
+    const fontBtn = e.target.closest('.font-switch [data-font]');
+    if (fontBtn) return setFont(fontBtn.dataset.font);
     const role = e.target.closest('[data-role]');
     if (role) {
       setRole(role.dataset.role);
@@ -935,6 +1079,18 @@ function bind() {
       }
       case 'settings':
         return openSettings();
+      case 'close-dialog':
+        return actEl.closest('dialog')?.close();
+      case 'boards':
+        return openBoards();
+      case 'pick-board':
+        return pickBoard(actEl.closest('[data-board]').dataset.board);
+      case 'rename-board':
+        return startRename(actEl.closest('[data-board]'));
+      case 'save-board':
+        return saveRename(actEl.closest('[data-board]'));
+      case 'delete-board':
+        return removeBoard(actEl.closest('[data-board]').dataset.board);
       case 'share-board':
         if (!state.api) return openSettings();
         return share({ title: 'Выбираем вместе', text: 'Голосуй за товары в нашей подборке', url: boardUrl() });
@@ -1004,7 +1160,7 @@ function bind() {
   });
   viewer.addEventListener('click', (e) => e.target === viewer && closeViewer());
   lightbox.addEventListener('click', (e) => (e.target === lightbox || e.target.classList.contains('slide')) && lightbox.close());
-  for (const d of [addDialog, editDialog, settingsDialog, $('#shareDialog')])
+  for (const d of [addDialog, editDialog, settingsDialog, $('#shareDialog'), $('#boardsDialog')])
     d.addEventListener('click', (e) => e.target === d && d.close());
 
   addText.addEventListener('input', updateParseInfo);
@@ -1021,6 +1177,15 @@ function bind() {
     e.preventDefault();
     openAdd(text);
     addLinks(text);
+  });
+  $('#boardsForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    createBoard();
+  });
+  $('#boardsList').addEventListener('keydown', (e) => {
+    if (!e.target.classList.contains('rename')) return;
+    if (e.key === 'Enter') (e.preventDefault(), saveRename(e.target.closest('[data-board]')));
+    if (e.key === 'Escape') (e.preventDefault(), e.stopPropagation(), renderBoards());
   });
   $('#editForm').addEventListener('submit', (e) => {
     if (e.submitter?.value === 'save') saveEdit();
@@ -1045,6 +1210,7 @@ async function start() {
   bind();
   render();
   if (!state.role) askRole();
+  loadBoards();
   await loadCards();
 
   // Web Share Target (PWA на Android): «Поделиться» из приложения маркетплейса → сюда

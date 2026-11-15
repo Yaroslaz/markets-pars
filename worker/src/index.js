@@ -1,6 +1,6 @@
 import { parseProduct, extractUrls, HttpError } from './parsers.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const STALE_MS = 6 * 60 * 60 * 1000; // через сколько обновлять цену/рейтинг в фоне
 
 const SCHEMA = [
@@ -24,6 +24,12 @@ const SCHEMA = [
     PRIMARY KEY (card_id, voter, kind)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_cards_board ON cards (board, created_at)`,
+  `CREATE TABLE IF NOT EXISTS boards (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
+  `INSERT OR IGNORE INTO boards (id, name, created_at) VALUES ('main', 'Основная', 0)`,
 ];
 
 let schemaReady = false;
@@ -74,6 +80,12 @@ async function route(request, env, ctx) {
     return json({ product: await parseProduct(firstUrl(link), env) });
   }
 
+  if (path === '/api/boards' && method === 'GET') return listBoards(env);
+  if (path === '/api/boards' && method === 'POST') return createBoard(env, await body(request));
+  const mb = path.match(/^\/api\/boards\/([\w-]+)$/);
+  if (mb && method === 'PATCH') return renameBoard(env, mb[1], await body(request));
+  if (mb && method === 'DELETE') return deleteBoard(env, mb[1]);
+
   const m = path.match(/^\/api\/cards\/([\w-]+)(\/(vote|refresh))?$/);
   if (m) {
     const id = m[1];
@@ -101,6 +113,55 @@ function firstUrl(text) {
   const u = extractUrls(text)[0];
   if (!u) throw new HttpError(400, 'В тексте нет ссылки');
   return u;
+}
+
+/* ------------------------------ Подборки ------------------------------ */
+
+const boardName = (n) => {
+  const name = String(n || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  if (!name) throw new HttpError(400, 'Нужно название подборки');
+  return name;
+};
+
+async function listBoards(env) {
+  // Подборки, у которых есть карточки, но нет записи (созданы до появления списка) — регистрируем
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO boards (id, name, created_at)
+     SELECT DISTINCT board, board, MIN(created_at) FROM cards GROUP BY board`
+  ).run();
+  const { results } = await env.DB.prepare(
+    `SELECT b.id, b.name, b.created_at AS createdAt,
+            COUNT(c.id) AS count,
+            COALESCE(SUM(COALESCE(json_extract(c.overrides, '$.price'), json_extract(c.data, '$.price'))), 0) AS total
+     FROM boards b LEFT JOIN cards c ON c.board = b.id
+     GROUP BY b.id ORDER BY b.created_at, b.name`
+  ).all();
+  return json({ boards: results });
+}
+
+async function createBoard(env, input) {
+  const name = boardName(input.name);
+  const id = crypto.randomUUID().replace(/-/g, '').slice(0, 10);
+  await env.DB.prepare('INSERT INTO boards (id, name, created_at) VALUES (?, ?, ?)').bind(id, name, Date.now()).run();
+  return json({ board: { id, name, count: 0, total: 0 } }, 201);
+}
+
+async function renameBoard(env, id, input) {
+  const name = boardName(input.name);
+  const r = await env.DB.prepare('UPDATE boards SET name = ? WHERE id = ?').bind(name, id).run();
+  if (!r.meta?.changes) throw new HttpError(404, 'Подборка не найдена');
+  return json({ ok: true });
+}
+
+async function deleteBoard(env, id) {
+  const left = await env.DB.prepare('SELECT COUNT(*) AS n FROM boards WHERE id != ?').bind(id).first();
+  if (!left?.n) throw new HttpError(400, 'Нельзя удалить единственную подборку');
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM votes WHERE card_id IN (SELECT id FROM cards WHERE board = ?)').bind(id),
+    env.DB.prepare('DELETE FROM cards WHERE board = ?').bind(id),
+    env.DB.prepare('DELETE FROM boards WHERE id = ?').bind(id),
+  ]);
+  return json({ ok: true });
 }
 
 /* ------------------------------ Карточки ------------------------------ */
