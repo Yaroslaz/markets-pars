@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Выбираем вместе</title>
+  <meta name="description" content="Вставьте ссылки с Ozon, Wildberries, Яндекс Маркета и AliExpress — получите карточки товаров и голосуйте вдвоём.">
+  <meta name="theme-color" content="#f3f3f6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#111114" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="styles.css">
+  <script src="config.js"></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20.5s-7.5-4.6-9.3-9.4C1.6 8 3.4 4.5 7 4.5c2 0 3.5 1.1 5 3 1.5-1.9 3-3 5-3 3.6 0 5.4 3.5 4.3 6.6-1.8 4.8-9.3 9.4-9.3 9.4z"/></symbol>
+    <linearGradient id="g-m" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5b9bff"/><stop offset="1" stop-color="#2f6bff"/></linearGradient>
+    <linearGradient id="g-f" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff7ab6"/><stop offset="1" stop-color="#ff3d8b"/></linearGradient>
+    <symbol id="i-duo" viewBox="0 0 28 24">
+      <path d="M9 19.6S3 15.9 1.6 12.1C.7 9.6 2.2 6.8 5 6.8c1.6 0 2.8.9 4 2.4 1.2-1.5 2.4-2.4 4-2.4 2.8 0 4.3 2.8 3.4 5.3C15 15.9 9 19.6 9 19.6z" fill="url(#g-m)" transform="rotate(-12 9 13)"/>
+      <path d="M18.5 21.2s-6.6-4-8.2-8.3c-1-2.7.6-5.8 3.8-5.8 1.8 0 3.1 1 4.4 2.6 1.3-1.6 2.6-2.6 4.4-2.6 3.2 0 4.8 3.1 3.8 5.8-1.6 4.3-8.2 8.3-8.2 8.3z" fill="url(#g-f)" style="stroke: var(--tab-bg)" stroke-width="1.8" stroke-linejoin="round" transform="rotate(10 18.5 14)"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18.5h10.5a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.5 9.6 4.5 4.5 0 0 0 7 18.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6L3.5 8.5"/><path d="M3.5 4v4.5H8M12 7.5V12l3 2"/></g></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M4 7l8 6 8-6"/></g></symbol>
+    <symbol id="i-wa" viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0-7.8 13.5L3 21l4.6-1.2A9 9 0 1 0 12 3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 8.2c.3-.4.7-.4 1-.1l.8 1.8c.1.3 0 .6-.2.8l-.5.5c.6 1.2 1.6 2.2 2.8 2.8l.5-.5c.2-.2.5-.3.8-.2l1.8.8c.3.2.4.6.1 1-.5.7-1.3 1.1-2.1.9-2.9-.7-5.1-2.9-5.8-5.8-.2-.8.2-1.6.8-2z" fill="currentColor"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></g></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></g></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M7.5 7.5 12 3l4.5 4.5"/><path d="M5 12v6.5A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5V12"/></g></symbol>
+    <symbol id="i-open" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/></g></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3.2l2.6 5.5 6 .7-4.4 4.1 1.2 5.9L12 16.5l-5.4 2.9 1.2-5.9L3.4 9.4l6-.7z"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20v-4h-4"/></g></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></g></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12.5A1.5 1.5 0 0 0 8.5 21h7a1.5 1.5 0 0 0 1.5-1.5L18 7M9 7V4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V7"/></g></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/></g></symbol>
+    <symbol id="i-paste" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h2.5A1.5 1.5 0 0 1 19 5.5v5"/><path d="M9 4H6.5A1.5 1.5 0 0 0 5 5.5v14A1.5 1.5 0 0 0 6.5 21H11"/><rect x="9" y="2.5" width="6" height="3.5" rx="1"/><path d="M14 17h7M18 14l3 3-3 3"/></g></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></g></symbol>
+    <symbol id="i-bag" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8h14l-1 12.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 20.5z"/><path d="M9 10V7a3 3 0 0 1 6 0v3"/></g></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></g></symbol>
+  </svg>
+
+  <div class="topdock" id="toolbar">
+    <div class="dd island" id="filterDd"></div>
+    <button class="icon-btn island" data-action="share-board" title="Поделиться подборкой" aria-label="Поделиться подборкой"><svg><use href="#i-share"/></svg></button>
+  </div>
+
+  <main>
+    <div class="grid" id="grid" aria-live="polite"></div>
+    <section class="empty" id="empty" hidden></section>
+  </main>
+
+  <div class="dock">
+    <div class="sumbar island" id="sumbar" hidden></div>
+    <div class="dock-row">
+      <nav class="tabbar island" aria-label="Навигация">
+        <button class="tab active" data-tab="all" aria-label="Подборка" title="Подборка"><svg><use href="#i-grid"/></svg></button>
+        <button class="tab" data-tab="both" aria-label="Нравится обоим" title="Нравится обоим"><svg class="duo-heart"><use href="#i-duo"/></svg></button>
+        <button class="tab" data-action="settings" aria-label="Настройки" title="Настройки"><svg><use href="#i-gear"/></svg></button>
+      </nav>
+      <button class="fab" data-action="add" aria-label="Добавить товары" title="Добавить товары"><svg><use href="#i-plus"/></svg></button>
+    </div>
+  </div>
+
+  <!-- Добавление ссылок -->
+  <dialog class="sheet" id="addDialog" aria-labelledby="addTitle">
+    <form method="dialog" class="sheet-inner" tabindex="-1" autofocus id="addForm" autocomplete="off">
+      <div class="sheet-head">
+        <h2 id="addTitle">Добавить товары</h2>
+        <button class="icon-btn ghost" value="close" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button>
+      </div>
+      <textarea name="links" rows="3" placeholder="Вставьте ссылки или целый текст с ними — лишнее отброшу"></textarea>
+      <p class="parse-info" id="parseInfo"></p>
+      <ul class="progress" id="progress" hidden></ul>
+      <div class="row">
+        <button type="button" class="btn paste" data-action="paste" title="Вставить из буфера обмена" aria-label="Вставить из буфера обмена"><svg><use href="#i-paste"/></svg><span>Вставить</span></button>
+        <button type="submit" class="btn primary grow" value="submit"><svg><use href="#i-plus"/></svg><span>Добавить</span></button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Просмотр карточки и галерея -->
+  <dialog class="viewer" id="viewer" aria-label="Карточка товара">
+    <div class="viewer-inner" id="viewerBody"></div>
+  </dialog>
+
+  <!-- Полноэкранное фото -->
+  <dialog class="lightbox" id="lightbox" aria-label="Фото">
+    <div class="lb-track" id="lbTrack"></div>
+    <button class="icon-btn lb-close" data-action="lb-close" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button>
+    <div class="lb-counter" id="lbCounter"></div>
+  </dialog>
+
+  <!-- Редактирование -->
+  <dialog class="sheet" id="editDialog" aria-labelledby="editTitle">
+    <form method="dialog" class="sheet-inner" tabindex="-1" autofocus id="editForm" autocomplete="off">
+      <div class="sheet-head">
+        <h2 id="editTitle">Дополнить карточку</h2>
+        <button class="icon-btn ghost" value="close" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button>
+      </div>
+      <p class="hint">Пустое поле — значение парсера.</p>
+      <label class="field"><span>Название</span><input name="title" type="text"></label>
+      <div class="field-row">
+        <label class="field"><span>Цена, ₽</span><input name="price" inputmode="decimal"></label>
+        <label class="field"><span>Старая цена, ₽</span><input name="oldPrice" inputmode="decimal"></label>
+      </div>
+      <div class="field-row">
+        <label class="field"><span>Оценка</span><input name="rating" inputmode="decimal" placeholder="4.8"></label>
+        <label class="field"><span>Отзывов</span><input name="reviews" inputmode="numeric"></label>
+      </div>
+      <label class="field"><span>Ссылки на фото (каждая с новой строки)</span><textarea name="images" rows="2" placeholder="https://…"></textarea></label>
+      <div class="row">
+        <button type="submit" class="btn primary grow" value="save">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Настройки -->
+  <dialog class="sheet" id="settingsDialog" aria-labelledby="settingsTitle">
+    <form method="dialog" class="sheet-inner" tabindex="-1" autofocus id="settingsForm" autocomplete="off">
+      <div class="sheet-head">
+        <h2 id="settingsTitle">Настройки</h2>
+        <button class="icon-btn ghost" value="close" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button>
+      </div>
+
+      <div class="field"><span>Я</span>
+        <div class="role-switch" id="roleSwitch">
+          <button type="button" class="m" data-role="m"><svg><use href="#i-heart"/></svg>Парень</button>
+          <button type="button" class="f" data-role="f"><svg><use href="#i-heart"/></svg>Девушка</button>
+        </div>
+      </div>
+      <label class="field"><span>Адрес сервера</span>
+        <input name="apiUrl" type="url" inputmode="url" placeholder="https://markets-pars.имя.workers.dev">
+      </label>
+      <div class="row">
+        <button type="button" class="btn" data-action="test-api">Проверить</button>
+        <span class="api-status" id="apiStatus"></span>
+      </div>
+      <div class="accordion" id="setupBox">
+        <button type="button" class="acc-head" aria-expanded="false" aria-controls="setupBody" data-action="toggle-setup">
+          <svg class="acc-ic"><use href="#i-cloud"/></svg><span>Создать свой сервер</span><svg class="acc-chev"><use href="#i-chevron"/></svg>
+        </button>
+        <div class="acc-body" id="setupBody"><div>
+          <ol class="steps">
+            <li>Нажмите кнопку и войдите в Cloudflare (бесплатно).</li>
+            <li>Нажмите Create and deploy — база создастся сама.</li>
+            <li>Скопируйте адрес …workers.dev и вставьте выше.</li>
+          </ol>
+          <a class="btn cf" id="deployLink" target="_blank" rel="noopener"><svg><use href="#i-cloud"/></svg><span>Развернуть на Cloudflare</span></a>
+        </div></div>
+      </div>
+      <label class="field"><span>Подборка</span><input name="board" type="text" placeholder="main" pattern="[A-Za-z0-9_-]{1,40}" title="Латиница, цифры, - и _"></label>
+
+      <div class="row">
+        <button type="submit" class="btn primary grow" value="save">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Запасной вариант «Поделиться» -->
+  <dialog class="sheet" id="shareDialog" aria-labelledby="shareTitle">
+    <form method="dialog" class="sheet-inner" tabindex="-1" autofocus>
+      <div class="sheet-head">
+        <h2 id="shareTitle">Поделиться</h2>
+        <button class="icon-btn ghost" value="close" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button>
+      </div>
+      <div class="share-targets" id="shareTargets"></div>
+      <div class="copy-line"><input id="shareUrl" readonly><button type="button" class="btn" data-action="copy-share"><svg><use href="#i-copy"/></svg><span>Копировать</span></button></div>
+    </form>
+  </dialog>
+
+  <!-- Выбор, кто вошёл -->
+  <dialog class="role" id="roleDialog" aria-labelledby="roleTitle">
+    <div class="role-inner">
+      <h2 id="roleTitle">Кто вы?</h2>
+      <div class="role-opts">
+        <button type="button" class="role-opt m" data-role="m"><svg><use href="#i-heart"/></svg><span>Парень</span></button>
+        <button type="button" class="role-opt f" data-role="f"><svg><use href="#i-heart"/></svg><span>Девушка</span></button>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

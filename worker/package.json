@@ -1,0 +1,14 @@
+{
+  "name": "markets-pars-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker: парсер карточек Ozon / Wildberries / Яндекс Маркет / AliExpress и голосования",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.40.0"
+  }
+}
