@@ -165,15 +165,19 @@ async function api(path, opts = {}) {
   if (opts.body) headers.set('Content-Type', 'application/json');
   if (opts.file) headers.set('Content-Type', opts.file.type);
   if (token) headers.set('Authorization', 'Bearer ' + token);
+  // ETag: если данные на сервере не менялись, он ответит пустым 304 — без VPN это сильно быстрее
+  if (opts.etag) headers.set('If-None-Match', opts.etag);
   const res = await fetch(base + path, {
     method: opts.method || 'GET',
     headers,
     body: opts.file ? await opts.file.arrayBuffer() : opts.body ? JSON.stringify(opts.body) : undefined,
     redirect: 'error',
+    cache: 'no-store',
   });
   if (base !== state.api || (!opts.public && token !== state.accessToken)) {
     throw new Error('Подключение изменилось');
   }
+  if (res.status === 304) return { notModified: true };
   if (res.ok && opts.image) return res.blob();
   let data = null;
   try {
@@ -181,8 +185,48 @@ async function api(path, opts = {}) {
   } catch {}
   if (base !== state.api || (!opts.public && token !== state.accessToken)) throw new Error('Подключение изменилось');
   if (res.status === 401 && !opts.public) lockApp();
-  if (!res.ok) throw new Error(data?.error || `Ошибка ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(data?.error || `Ошибка ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
+  if (data && typeof data === 'object' && res.headers.get('ETag')) data._etag = res.headers.get('ETag');
   return data;
+}
+
+/* ============================ Кеш на устройстве ============================ */
+
+// Последняя загруженная подборка хранится на устройстве: при запуске и при смене подборки
+// карточки показываются сразу, а свежие данные подтягиваются в фоне.
+const cacheKey = (board = state.board) => `cache:${state.api}:${board}`;
+
+function saveCache() {
+  if (!state.api || !state.unlocked) return;
+  const cards = state.cards.filter((c) => !c._pending);
+  const value = JSON.stringify({ cards, boards: state.boards, etag: state.etag || '' });
+  // Переполнение хранилища не страшно — просто не кешируем
+  if (value.length < 2_500_000) store.set(cacheKey(), value);
+}
+
+// Голоса и правки, сделанные между опросами, тоже попадают в кеш — при сворачивании страницы
+addEventListener('pagehide', () => saveCache());
+document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && saveCache());
+
+function readCache(board = state.board) {
+  try {
+    const data = JSON.parse(store.get(cacheKey(board)) || 'null');
+    return data && Array.isArray(data.cards) ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+function applyCards(cards, etag) {
+  // не перетираем голос, который пользователь только что нажал
+  const pending = new Map(state.cards.filter((c) => c._pending).map((c) => [c.id, c]));
+  state.cards = cards.map((c) => pending.get(c.id) || withUploadedPhoto(c));
+  state.etag = etag || '';
+  state.error = '';
 }
 
 /* ======================= Приложение для Android ======================= */
@@ -311,14 +355,19 @@ async function loadCards({ silent = false } = {}) {
     state.loading = !state.cards.length;
     render();
   }
+  const board = state.board;
   try {
-    const data = await api(`/api/cards?board=${encodeURIComponent(state.board)}`);
-    // не перетираем голос, который пользователь только что нажал
-    const pending = new Map(state.cards.filter((c) => c._pending).map((c) => [c.id, c]));
-    state.cards = data.cards.map((c) => pending.get(c.id) || withUploadedPhoto(c));
-    state.error = '';
+    const data = await api(`/api/cards?board=${encodeURIComponent(board)}`, { etag: state.cards.length ? state.etag : '' });
+    if (board !== state.board) return;
+    if (data.notModified) {
+      if (!state.loading) return; // ничего не изменилось — экран не трогаем
+    } else {
+      applyCards(data.cards, data._etag);
+      saveCache();
+    }
   } catch (e) {
-    if (!silent) state.error = e.message;
+    if (board !== state.board) return;
+    if (!silent && !state.cards.length) state.error = e.message;
   }
   state.loading = false;
   render();
@@ -1246,6 +1295,7 @@ async function loadBoards() {
   try {
     const r = await api('/api/boards');
     state.boards = r.boards;
+    saveCache();
     // Подборки из ссылки ещё нет в списке (например, её удалили) — переходим на первую
     if (!currentBoard() && state.boards.length && !state.cards.length) switchBoard(state.boards[0].id, false);
   } catch {}
@@ -1284,7 +1334,10 @@ function switchBoard(id, notify = true) {
   if (id === state.board) return;
   state.board = id;
   store.set('board', id === 'main' ? '' : id);
-  state.cards = [];
+  // Сразу показываем то, что помним об этой подборке, свежее подтянется следом
+  const cached = readCache(id);
+  state.cards = cached ? cached.cards : [];
+  state.etag = cached ? cached.etag : '';
   state.source = '';
   cardSig.clear();
   setFilter('all');
@@ -1302,13 +1355,20 @@ async function createBoard() {
   const input = $('#boardsForm').boardName;
   const name = input.value.trim();
   if (!name) return input.focus();
+  // Подборка появляется сразу: адрес придумываем сами, сервер сохраняет её в фоне
+  const previous = state.board;
+  const board = { id: 'b' + crypto.randomUUID().replace(/-/g, '').slice(0, 11), name, count: 0, total: 0 };
+  state.boards.push(board);
+  input.value = '';
+  pickBoard(board.id);
   try {
-    const r = await api('/api/boards', { method: 'POST', body: { name } });
-    state.boards.push(r.board);
-    input.value = '';
-    pickBoard(r.board.id);
+    await api('/api/boards', { method: 'POST', body: { id: board.id, name } });
+    saveCache();
   } catch (e) {
-    toast(e.message);
+    state.boards = state.boards.filter((b) => b !== board);
+    if (state.board === board.id) switchBoard(previous, false);
+    renderBoardName();
+    toast('Не удалось создать подборку: ' + e.message);
   }
 }
 
@@ -1592,28 +1652,56 @@ function bind() {
 
 /* ============================== Старт ================================= */
 
-async function enterApp(verified = false) {
-  if (state.api && !verified) {
+async function enterApp() {
+  if (state.api) {
+    if (!state.accessToken) return lockApp();
+    // Сохранённая подборка — на экран сразу, без ожидания сервера
+    const cached = readCache();
+    if (cached && !state.cards.length) {
+      state.cards = cached.cards;
+      state.boards = cached.boards || [];
+      state.etag = cached.etag || '';
+      state.unlocked = true;
+      state.loading = false;
+      renderBoardName();
+      render();
+    }
+    // Всё остальное — одним запросом: проверка входа, подборки и карточки
     try {
-      const health = await api('/api/health', { public: true });
-      if (health.authRequired) {
-        if (!state.accessToken) return lockApp();
-        await api('/api/auth/session');
+      const board = state.board;
+      const data = await api(`/api/bootstrap?board=${encodeURIComponent(board)}`, { etag: cached ? state.etag : '' });
+      if (!state.accessToken) return; // пароль сменился — показан вход
+      state.unlocked = true;
+      if (!data.notModified && board === state.board) {
+        state.boards = data.boards;
+        applyCards(data.cards, data._etag);
+        saveCache();
       }
     } catch (error) {
-      if (!accessDialog.open) {
-        state.error = error.message;
+      if (!state.accessToken) return;
+      if (error.status === 404) {
+        // Старый сервер без /api/bootstrap
+        state.unlocked = true;
+        loadBoards();
+        await loadCards();
+      } else if (!state.cards.length) {
+        state.error = error instanceof TypeError ? 'Не удалось подключиться к серверу. Проверьте интернет.' : error.message;
         state.loading = false;
         render();
+        return;
+      } else {
+        toast('Нет связи с сервером — показана сохранённая подборка');
       }
-      return;
     }
   }
   state.unlocked = true;
+  state.loading = false;
   if (accessDialog.open) accessDialog.close();
   if (!state.role) askRole();
-  loadBoards();
-  await loadCards();
+  renderBoardName();
+  render();
+  if (!state.api) await loadCards();
+  else if (!currentBoard() && state.boards.length && !state.cards.length) switchBoard(state.boards[0].id, false);
 
   // Web Share Target (PWA на Android): «Поделиться» из приложения маркетплейса → сюда
   const qs = new URLSearchParams(location.search);

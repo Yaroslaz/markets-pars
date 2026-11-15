@@ -100,6 +100,12 @@ public class MainActivity extends Activity {
                     });
         }
 
+        // Android 13+ (и обязательно с targetSdk 36) не вызывает onBackPressed — регистрируем обработчик «Назад» явно
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::handleBack);
+        }
+
         String shared = sharedText(getIntent());
         if (savedInstanceState == null || shared != null) site.loadUrl(siteUrl(shared));
         else site.restoreState(savedInstanceState);
@@ -138,9 +144,24 @@ public class MainActivity extends Activity {
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
-        if (reader.isShowing()) reader.cancelCurrent();
-        else if (site.canGoBack()) site.goBack();
-        else super.onBackPressed();
+        handleBack();
+    }
+
+    /**
+     * «Назад» отменяет последний шаг: закрывает проверку магазина, затем то, что открыто на сайте
+     * (карточку, галерею, окно, режим выбора — сайт отвечает через window.mpHandleBack).
+     * Только когда закрывать нечего, приложение уходит в фон, сохраняя состояние.
+     */
+    private void handleBack() {
+        if (reader.isShowing()) {
+            reader.cancelCurrent();
+            return;
+        }
+        site.evaluateJavascript(
+                "(function(){try{return !!(window.mpHandleBack&&window.mpHandleBack())}catch(e){return false}})()",
+                handled -> {
+                    if (!"true".equals(handled)) moveTaskToBack(true);
+                });
     }
 
     @Override

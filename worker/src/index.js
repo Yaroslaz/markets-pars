@@ -4,7 +4,9 @@ import { accessConfig, requireSession, signIn } from './access.js';
 const VERSION = '1.4.0';
 const STALE_MS = 6 * 60 * 60 * 1000; // через сколько обновлять цену/рейтинг в фоне
 const MAX_PHOTO_BYTES = 512 * 1024;
-const CARD_SELECT = 'SELECT c.*, (SELECT version FROM card_photos WHERE card_id = c.id) AS photo_version FROM cards c';
+// Лайки берём тем же запросом, что и карточки, — один поход в базу вместо нескольких
+const CARD_SELECT = 'SELECT c.*, (SELECT version FROM card_photos WHERE card_id = c.id) AS photo_version, ' +
+  '(SELECT group_concat(DISTINCT kind) FROM votes WHERE card_id = c.id) AS liked FROM cards c';
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS cards (
@@ -38,6 +40,9 @@ const SCHEMA = [
     created_at INTEGER NOT NULL
   )`,
   `INSERT OR IGNORE INTO boards (id, name, created_at) VALUES ('main', 'Основная', 0)`,
+  // Подборки, у которых есть карточки, но нет записи (созданы до появления списка), — регистрируем.
+  // Раньше это делалось при каждом открытии списка подборок — лишняя запись в базу на каждый запрос.
+  `INSERT OR IGNORE INTO boards (id, name, created_at) SELECT board, board, MIN(created_at) FROM cards GROUP BY board`,
 ];
 
 let schemaReady = false;
@@ -50,12 +55,26 @@ async function ensureSchema(db) {
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, If-None-Match',
+  'Access-Control-Expose-Headers': 'ETag',
   'Access-Control-Max-Age': '86400',
 };
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...CORS } });
+
+// Ответ с ETag: если у клиента та же версия, отдаём пустой 304 — опрос раз в 20 секунд почти ничего не весит.
+// Это важно без VPN: большие ответы Cloudflare в России тормозят сильнее мелких.
+// Версия считается только по карточкам — у /api/bootstrap и /api/cards она общая, и сайт может
+// переиспользовать её при смене подборки. Список подборок сайт обновляет отдельно, когда его открывают.
+async function jsonTagged(request, data) {
+  const text = JSON.stringify(data);
+  const hash = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(JSON.stringify(data.cards)));
+  const etag = '"' + [...new Uint8Array(hash)].slice(0, 12).map((b) => b.toString(16).padStart(2, '0')).join('') + '"';
+  const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ETag: etag, ...CORS };
+  if (request.headers.get('If-None-Match') === etag) return new Response(null, { status: 304, headers });
+  return new Response(text, { headers });
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -85,7 +104,12 @@ async function route(request, env, ctx) {
   if (!env.DB) throw new HttpError(500, 'База D1 не подключена (binding DB)');
   await ensureSchema(env.DB);
 
-  if (path === '/api/cards' && method === 'GET') return listCards(env, ctx, url);
+  // Всё, что нужно сайту при запуске, одним запросом: сессия проверена выше, тут подборки и карточки
+  if (path === '/api/bootstrap' && method === 'GET') {
+    const [boards, cards] = await Promise.all([boardsData(env), cardsData(env, ctx, url)]);
+    return jsonTagged(request, { boards, ...cards });
+  }
+  if (path === '/api/cards' && method === 'GET') return jsonTagged(request, await cardsData(env, ctx, url));
   if (path === '/api/cards' && method === 'POST') return addCard(env, await body(request));
   if (path === '/api/cards/import' && method === 'POST') return addCard(env, await body(request), true);
   if (path === '/api/parse' && method === 'POST') {
@@ -93,7 +117,7 @@ async function route(request, env, ctx) {
     return json({ product: await parseProduct(firstUrl(link), shareText ?? link) });
   }
 
-  if (path === '/api/boards' && method === 'GET') return listBoards(env);
+  if (path === '/api/boards' && method === 'GET') return json({ boards: await boardsData(env) });
   if (path === '/api/boards' && method === 'POST') return createBoard(env, await body(request));
   const mb = path.match(/^\/api\/boards\/([\w-]+)$/);
   if (mb && method === 'PATCH') return renameBoard(env, mb[1], await body(request));
@@ -138,12 +162,7 @@ const boardName = (n) => {
   return name;
 };
 
-async function listBoards(env) {
-  // Подборки, у которых есть карточки, но нет записи (созданы до появления списка) — регистрируем
-  await env.DB.prepare(
-    `INSERT OR IGNORE INTO boards (id, name, created_at)
-     SELECT DISTINCT board, board, MIN(created_at) FROM cards GROUP BY board`
-  ).run();
+async function boardsData(env) {
   const { results } = await env.DB.prepare(
     `SELECT b.id, b.name, b.created_at AS createdAt,
             COUNT(c.id) AS count,
@@ -151,13 +170,16 @@ async function listBoards(env) {
      FROM boards b LEFT JOIN cards c ON c.board = b.id
      GROUP BY b.id ORDER BY b.created_at, b.name`
   ).all();
-  return json({ boards: results });
+  return results;
 }
 
 async function createBoard(env, input) {
   const name = boardName(input.name);
-  const id = crypto.randomUUID().replace(/-/g, '').slice(0, 10);
-  await env.DB.prepare('INSERT INTO boards (id, name, created_at) VALUES (?, ?, ?)').bind(id, name, Date.now()).run();
+  // Сайт сам придумывает адрес новой подборки, чтобы сразу на неё переключиться, не дожидаясь ответа
+  const wanted = typeof input.id === 'string' && /^[\w-]{6,40}$/.test(input.id) && input.id !== 'main' ? input.id : null;
+  const id = wanted || crypto.randomUUID().replace(/-/g, '').slice(0, 10);
+  const r = await env.DB.prepare('INSERT OR IGNORE INTO boards (id, name, created_at) VALUES (?, ?, ?)').bind(id, name, Date.now()).run();
+  if (!r.meta?.changes) throw new HttpError(409, 'Такая подборка уже есть');
   return json({ board: { id, name, count: 0, total: 0 } }, 201);
 }
 
@@ -181,25 +203,25 @@ async function deleteBoard(env, id) {
 
 /* ------------------------------ Карточки ------------------------------ */
 
-async function listCards(env, ctx, url) {
+async function cardsData(env, ctx, url) {
   const b = board(url.searchParams.get('board'));
   const { results: rows } = await env.DB.prepare(CARD_SELECT + ' WHERE c.board = ? ORDER BY c.created_at DESC LIMIT 500')
     .bind(b)
     .all();
-  const likes = await likesFor(env, rows.map((r) => r.id));
+  const likes = {};
   const now = Date.now();
 
   // Фоново освежаем самые старые карточки (цены меняются)
   const stale = rows.filter((r) => now - r.updated_at > STALE_MS).sort((a, b) => a.updated_at - b.updated_at).slice(0, 2);
   if (stale.length) ctx.waitUntil(Promise.allSettled(stale.map((r) => refreshCard(env, r.id))));
 
-  return json({ board: b, cards: rows.map((r) => present(r, likes)) });
+  return { board: b, cards: rows.map((r) => present(r, likes)) };
 }
 
 async function getCard(env, id) {
   const row = await env.DB.prepare(CARD_SELECT + ' WHERE c.id = ?').bind(id).first();
   if (!row) throw new HttpError(404, 'Карточка не найдена');
-  return present(row, await likesFor(env, [id]));
+  return present(row, {});
 }
 
 async function savePhoto(env, id, request) {
@@ -420,7 +442,9 @@ function present(row, likes) {
     id: row.id,
     ...card,
     edited: Object.keys(overrides),
-    likes: likes[row.id] || { m: false, f: false },
+    likes: typeof row.liked === 'string' || row.liked === null
+      ? { m: /(^|,)m(,|$)/.test(row.liked || ''), f: /(^|,)f(,|$)/.test(row.liked || '') }
+      : likes[row.id] || { m: false, f: false },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
