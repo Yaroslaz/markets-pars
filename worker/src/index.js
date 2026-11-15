@@ -351,13 +351,25 @@ async function refreshCard(env, id) {
 
 function keepCompleteProduct(fresh, old) {
   if (fresh.partial && fresh.images?.length && !old.images?.length) {
-    return mergeBrowserProduct(old, { images: fresh.images, thumbs: fresh.thumbs });
+    return keepRichFields(mergeBrowserProduct(old, { images: fresh.images, thumbs: fresh.thumbs }), old);
   }
   const lostPrice = fresh.price == null && old.price != null;
   const lostPhotos = !fresh.images?.length && old.images?.length;
   const lostImportedTitle = (old.titleFromBrowser || old.titleFromShare) && !fresh.titleFromShare &&
     fresh.price == null && !fresh.images?.length;
-  return fresh.partial && (!old.partial || lostPrice || lostPhotos || lostImportedTitle) ? old : fresh;
+  return fresh.partial && (!old.partial || lostPrice || lostPhotos || lostImportedTitle) ? old : keepRichFields(fresh, old);
+}
+
+// Описание, характеристики, варианты и отзывы часто приходят только из приложения или расширения.
+// Фоновое обновление сервером их не отдаёт — тогда оставляем прежние, а не стираем.
+const RICH_FIELDS = ['description', 'specs', 'variants', 'reviewsTop', 'priceNoCard', 'rating', 'reviews'];
+function keepRichFields(product, old) {
+  const result = { ...product };
+  for (const key of RICH_FIELDS) {
+    const missing = result[key] == null || (Array.isArray(result[key]) && !result[key].length);
+    if (missing && old[key] != null) result[key] = old[key];
+  }
+  return result;
 }
 
 const EDITABLE = ['title', 'price', 'oldPrice', 'rating', 'reviews', 'images'];
