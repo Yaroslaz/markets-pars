@@ -76,8 +76,8 @@ async function route(request, env, ctx) {
   if (path === '/api/cards' && method === 'GET') return listCards(env, ctx, url);
   if (path === '/api/cards' && method === 'POST') return addCard(env, await body(request));
   if (path === '/api/parse' && method === 'POST') {
-    const { url: link } = await body(request);
-    return json({ product: await parseProduct(firstUrl(link), env) });
+    const { url: link, shareText } = await body(request);
+    return json({ product: await parseProduct(firstUrl(link), env, shareText ?? link) });
   }
 
   if (path === '/api/boards' && method === 'GET') return listBoards(env);
@@ -190,7 +190,7 @@ async function getCard(env, id) {
 async function addCard(env, input) {
   const b = board(input.board);
   const link = firstUrl(input.url);
-  const product = await parseProduct(link, env);
+  const product = await parseProduct(link, env, input.shareText ?? input.url);
   const now = Date.now();
 
   const existing = await env.DB.prepare('SELECT * FROM cards WHERE board = ? AND source = ? AND product_id = ?')
@@ -233,7 +233,8 @@ async function refreshCard(env, id) {
 function keepCompleteProduct(fresh, old) {
   const lostPrice = fresh.price == null && old.price != null;
   const lostPhotos = !fresh.images?.length && old.images?.length;
-  return fresh.partial && (!old.partial || lostPrice || lostPhotos) ? old : fresh;
+  const lostSharedTitle = old.titleFromShare && !fresh.titleFromShare && fresh.price == null && !fresh.images?.length;
+  return fresh.partial && (!old.partial || lostPrice || lostPhotos || lostSharedTitle) ? old : fresh;
 }
 
 const EDITABLE = ['title', 'price', 'oldPrice', 'rating', 'reviews', 'images'];

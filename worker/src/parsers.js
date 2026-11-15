@@ -81,7 +81,7 @@ function needsResolve(url, source) {
   return false;
 }
 
-export async function parseProduct(inputUrl, env = {}) {
+export async function parseProduct(inputUrl, env = {}, shareText) {
   let source = detectSource(inputUrl);
   if (!source) throw new HttpError(400, 'Ссылка не похожа на Ozon, Wildberries, Яндекс Маркет или AliExpress');
   let url = inputUrl;
@@ -91,7 +91,8 @@ export async function parseProduct(inputUrl, env = {}) {
   }
   if (needsResolve(url, source)) throw new HttpError(422, `Не удалось раскрыть короткую ссылку ${SOURCES[source].name} — вставьте полную ссылку на товар`);
   const parser = { wb: parseWb, ym: parseYm, ozon: parseOzon, ali: parseAli }[source];
-  const product = await parser(url, env);
+  const share = source === 'ali' ? aliShareData(inputUrl, shareText) : null;
+  const product = await parser(url, env, share);
   if (!product?.productId) throw new HttpError(422, 'Не удалось определить товар по ссылке');
   return product;
 }
@@ -332,15 +333,40 @@ function aliId(url) {
     ?? productId?.match(/^\d+$/)?.[0];
 }
 
-async function parseAli(url, env) {
+async function parseAli(url, env, share) {
   const id = aliId(url);
   if (!id) throw new HttpError(400, 'Не нашёл товар AliExpress в ссылке');
   const canonical = `https://aliexpress.ru/item/${id}.html`;
-  const fromApi = await fetchAliProduct(id, env);
-  if (fromApi) return { ...fromApi, source: 'ali', productId: id, url: canonical };
-  const fromPage = await tryPlainHtml(canonical, 'ali', id);
-  if (fromPage) return { ...fromPage, source: 'ali', productId: id, url: canonical };
-  return partialFromSlug('ali', id, canonical, '');
+  const data = await fetchAliProduct(id, env) ?? await tryPlainHtml(canonical, 'ali', id);
+  const product = data ? { ...data, source: 'ali', productId: id, url: canonical } : partialFromSlug('ali', id, canonical, '');
+  if (!product.partial || !share) return product;
+
+  const priceFromShare = product.price == null && share.price != null;
+  const price = priceFromShare ? share.price : product.price;
+  return {
+    ...product,
+    title: data ? product.title : share.title,
+    titleFromShare: !data,
+    price,
+    priceNote: priceFromShare ? 'из текста «Поделиться»' : product.priceNote,
+    partial: price == null || !product.images.length,
+  };
+}
+
+function aliShareData(inputUrl, text) {
+  if (typeof text !== 'string' || text.length > 3000) return null;
+  const links = extractUrls(text);
+  if (links.length !== 1 || links[0] !== inputUrl) return null;
+  const snippet = text.slice(0, text.indexOf(inputUrl)).trim().replace(/\s+/g, ' ');
+  const russian = snippet.match(/^Смотри, что есть на AliExpress!\s+(.+?)\s+за\s+([\d ]+(?:[.,]\d{1,2})?\s*(?:₽|руб\.?))(?:\s*[-–—]\s*уже со скидкой\s*-?\s*\d{1,3}\s*%)?$/i);
+  if (russian) return { title: russian[1].trim().slice(0, 300), price: rubleAmount(russian[2]) };
+
+  const english = snippet.match(/^I just found this on AliExpress:\s*([^|]*\d[^|]*)\|\s*(.+)$/i);
+  if (!english) return null;
+  const amount = english[1].trim();
+  const rublePrefix = /^(?:RUB\s+|₽\s*)/i;
+  const price = rublePrefix.test(amount) ? rubleAmount(amount.replace(rublePrefix, ''), 'RUB') : rubleAmount(amount);
+  return { title: english[2].trim().slice(0, 300), price };
 }
 
 /* ------------------------------- Общее ------------------------------- */

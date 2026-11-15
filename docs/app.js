@@ -521,6 +521,8 @@ async function addLinks(text) {
     toast('Не нашёл ссылок на Ozon, WB, Маркет или AliExpress');
     return;
   }
+  const shareText = links.length === 1 && links[0].source === 'ali' && text.length <= 3000 &&
+    /^(?:Смотри, что есть на AliExpress!|I just found this on AliExpress:)/i.test(text.trim()) ? text : undefined;
   const list = $('#progress');
   list.hidden = false;
   list.innerHTML = links
@@ -537,7 +539,7 @@ async function addLinks(text) {
       const i = next++;
       const li = $(`li[data-i="${i}"]`, list);
       try {
-        const r = await api('/api/cards', { method: 'POST', body: { board: state.board, url: links[i].url } });
+        const r = await api('/api/cards', { method: 'POST', body: { board: state.board, url: links[i].url, shareText } });
         upsertCard(r.card);
         if (r.duplicate) dups++;
         else added++;
@@ -616,6 +618,7 @@ function refreshViewer(full = false) {
   body.dataset.sig = sig;
   body.dataset.id = c.id;
   const imgs = c.images || [];
+  const missing = [!imgs.length && 'фото', c.price == null && 'цены'].filter(Boolean).join(' и ');
   const src = SOURCES[c.source];
   body.innerHTML = `
     <div class="gallery">
@@ -651,7 +654,7 @@ function refreshViewer(full = false) {
       <h2>${esc(c.title)}</h2>
       ${metaHtml(c)}
       ${votesHtml(c)}
-      ${c.partial && !c.edited.length ? `<div class="partial-note"><span class="msg">${src.name} не отдал фото и цену</span><button type="button" class="btn" data-action="edit-card" aria-label="Дополнить вручную" title="Дополнить вручную"><svg><use href="#i-edit"/></svg><span class="lbl">Дополнить</span></button></div>` : ''}
+      ${c.partial && missing ? `<div class="partial-note"><span class="msg">Нет ${missing}</span><button type="button" class="btn" data-action="edit-card" aria-label="Дополнить вручную" title="Дополнить вручную"><svg><use href="#i-edit"/></svg><span class="lbl">Дополнить</span></button></div>` : ''}
       <div class="open-row">
         <a class="btn primary" href="${esc(appHref(c))}" ${IS_ANDROID ? '' : 'target="_blank"'} rel="noopener"><svg><use href="#i-open"/></svg><span><span class="verb">Открыть в </span>${src.name}</span></a>
         <button type="button" class="icon-btn share" data-action="share-card" aria-label="Поделиться" title="Поделиться"><svg><use href="#i-share"/></svg></button>
