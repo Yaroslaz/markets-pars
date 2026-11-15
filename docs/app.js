@@ -435,7 +435,8 @@ function filterMenu(root) {
   });
   sync();
 }
-document.addEventListener('click', () => $$('.dd.open').forEach((d) => d.classList.remove('open')));
+// Клик вне открытого меню закрывает его (клик внутри меню закрывает уже само действие)
+document.addEventListener('click', (e) => $$('.dd.open').forEach((d) => !d.contains(e.target) && d.classList.remove('open')));
 
 /* ============================== Голоса ================================ */
 
@@ -619,7 +620,19 @@ function refreshViewer(full = false) {
   body.innerHTML = `
     <div class="gallery">
       <div class="stage">
-      <button class="icon-btn viewer-close" data-action="close-viewer" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button>
+      <div class="viewer-top">
+        <div class="dd more">
+          <button type="button" class="icon-btn" data-action="toggle-more" aria-haspopup="menu" aria-label="Ещё" title="Ещё"><svg><use href="#i-more"/></svg></button>
+          <div class="dd-menu" role="menu">
+            <button type="button" class="dd-opt" role="menuitem" data-action="copy-card"><span class="ic"><svg><use href="#i-copy"/></svg></span><span class="lbl">Скопировать ссылку</span></button>
+            <button type="button" class="dd-opt" role="menuitem" data-action="refresh-card"><span class="ic"><svg><use href="#i-refresh"/></svg></span><span class="lbl">Обновить цену и фото</span></button>
+            <button type="button" class="dd-opt" role="menuitem" data-action="edit-card"><span class="ic"><svg><use href="#i-edit"/></svg></span><span class="lbl">Изменить</span></button>
+            <div class="dd-sep"></div>
+            <button type="button" class="dd-opt danger" role="menuitem" data-action="delete-card"><span class="ic"><svg><use href="#i-trash"/></svg></span><span class="lbl">Удалить из подборки</span></button>
+          </div>
+        </div>
+        <button type="button" class="icon-btn" data-action="close-viewer" aria-label="Закрыть" title="Закрыть"><svg><use href="#i-close"/></svg></button>
+      </div>
       <div class="track" id="track">${
         imgs.length
           ? imgs.map((u, i) => `<div class="slide"><img src="${esc(u)}" alt="Фото ${i + 1}" ${i ? 'loading="lazy"' : ''} referrerpolicy="no-referrer" data-zoom="${i}"></div>`).join('')
@@ -638,14 +651,10 @@ function refreshViewer(full = false) {
       <h2>${esc(c.title)}</h2>
       ${metaHtml(c)}
       ${votesHtml(c)}
-      ${c.partial && !c.edited.length ? `<div class="partial-note">${src.name} не отдал фото и цену. Можно дополнить вручную.</div>` : ''}
-      <a class="btn primary open" href="${esc(appHref(c))}" ${IS_ANDROID ? '' : 'target="_blank"'} rel="noopener"><svg><use href="#i-open"/></svg><span>${IS_MOBILE ? 'Открыть в приложении' : `Открыть на ${src.name}`}</span></a>
-      <div class="tools">
-        <button class="tool" data-action="share-card"><svg><use href="#i-share"/></svg><span>Отправить</span></button>
-        <button class="tool" data-action="copy-card"><svg><use href="#i-copy"/></svg><span>Ссылка</span></button>
-        <button class="tool" data-action="refresh-card"><svg><use href="#i-refresh"/></svg><span>Обновить</span></button>
-        <button class="tool" data-action="edit-card"><svg><use href="#i-edit"/></svg><span>Изменить</span></button>
-        <button class="tool danger" data-action="delete-card"><svg><use href="#i-trash"/></svg><span>Удалить</span></button>
+      ${c.partial && !c.edited.length ? `<div class="partial-note"><span class="msg">${src.name} не отдал фото и цену</span><button type="button" class="btn" data-action="edit-card" aria-label="Дополнить вручную" title="Дополнить вручную"><svg><use href="#i-edit"/></svg><span class="lbl">Дополнить</span></button></div>` : ''}
+      <div class="open-row">
+        <a class="btn primary" href="${esc(appHref(c))}" ${IS_ANDROID ? '' : 'target="_blank"'} rel="noopener"><svg><use href="#i-open"/></svg><span>${IS_MOBILE ? 'Открыть в приложении' : `Открыть на ${src.name}`}</span></a>
+        <button type="button" class="icon-btn share" data-action="share-card" aria-label="Поделиться" title="Поделиться"><svg><use href="#i-share"/></svg></button>
       </div>
       <div class="updated">${c.priceNote ? `Цена ${esc(c.priceNote)} · ` : ''}обновлено ${ago(c.updatedAt)}</div>
     </div>`;
@@ -1061,6 +1070,7 @@ function bind() {
     if (!actEl && card) return openViewer(card.dataset.id);
     if (!actEl) return;
     const c = state.cards.find((x) => x.id === state.openId);
+    if (actEl.dataset.action !== 'toggle-more') actEl.closest('.dd.more')?.classList.remove('open');
     switch (actEl.dataset.action) {
       case 'add':
         return openAdd();
@@ -1096,6 +1106,8 @@ function bind() {
         return share({ title: 'Выбираем вместе', text: 'Голосуй за товары в нашей подборке', url: boardUrl() });
       case 'reload':
         return loadCards();
+      case 'toggle-more':
+        return actEl.closest('.dd').classList.toggle('open');
       case 'close-viewer':
         return closeViewer();
       case 'prev':

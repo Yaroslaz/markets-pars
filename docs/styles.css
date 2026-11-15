@@ -372,7 +372,12 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
   position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
   background: rgba(0, 0, 0, .45); color: #fff; font-size: 12px; padding: 2px 9px; border-radius: 9px;
 }
-.viewer-close { position: absolute; top: calc(var(--safe-t) + 10px); right: 10px; z-index: 3; background: var(--island); box-shadow: var(--shadow); }
+.viewer-top { position: absolute; top: calc(var(--safe-t) + 10px); right: 10px; z-index: 3; display: flex; gap: 8px; }
+.viewer-top .icon-btn { background: var(--island); box-shadow: var(--shadow); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.viewer-top .dd-menu { left: auto; right: 0; transform-origin: top right; width: 240px; }
+.dd-opt.danger { color: var(--danger); }
+.dd-opt.danger .ic { color: var(--danger); }
+.dd-opt .ic svg { width: 17px; height: 17px; }
 .thumbs { display: flex; gap: 6px; overflow-x: auto; padding: 0 12px 10px; scrollbar-width: none; }
 .thumbs::-webkit-scrollbar { display: none; }
 .thumbs button { flex: none; width: 46px; height: 60px; border-radius: 9px; overflow: hidden; border: 2px solid transparent; padding: 0; background: var(--surface); opacity: .7; transition: opacity .15s; }
@@ -385,7 +390,9 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .info .meta .rate svg { width: 15px; height: 15px; }
 .info .votes .vote { height: 44px; }
 .info .votes .vote svg { width: 22px; height: 22px; }
-.info .open { width: 100%; }
+.open-row { display: flex; gap: 8px; }
+.open-row .btn.primary { flex: 1; height: 46px; }
+.open-row .icon-btn { width: 46px; height: 46px; }
 .tools { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
 .tool {
   display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 2px; border: 0; border-radius: 12px;
@@ -395,7 +402,15 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .tool.danger { color: var(--danger); }
 .tool:active { transform: scale(.96); }
 .info .updated { color: var(--muted); font-size: 12px; text-align: center; }
-.info .partial-note { font-size: 13px; color: var(--muted); background: var(--surface-2); padding: 10px 12px; border-radius: 12px; }
+.info .partial-note { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); background: var(--surface-2); padding: 6px 6px 6px 12px; border-radius: 12px; }
+.info .partial-note .msg { flex: 1; min-width: 0; }
+.info .partial-note .btn { height: 34px; padding: 0 12px; background: var(--surface); flex: none; }
+/* на телефоне — только иконка карандаша */
+@media (max-width: 599px) {
+  .info .partial-note .btn { width: 34px; padding: 0; }
+  .info .partial-note .btn .lbl { display: none; }
+}
+.info .partial-note .btn svg { width: 16px; height: 16px; }
 
 /* ---------- Лайтбокс ---------- */
 .lightbox { width: 100%; height: 100%; margin: 0; background: #000; }
@@ -500,5 +515,5 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
   .gallery .nav { display: inline-grid; }
   .thumbs { padding: 0 16px 14px; justify-content: center; }
   .info { flex: 1; overflow: auto; padding: 24px 22px 20px; scrollbar-width: thin; }
-  .viewer-close { top: 12px; right: 12px; }
+  .viewer-top { top: 12px; right: 12px; }
 }
