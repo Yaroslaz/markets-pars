@@ -1,8 +1,8 @@
 @echo off
 rem ===========================================================================
 rem  "Vybiraem vmeste": browser extension installer / updater for Windows.
-rem  Double-click this file. It downloads the extension from GitHub into
-rem  %LOCALAPPDATA%\VybiraemVmeste\extension and shows what to click next.
+rem  Double-click this file. It downloads the extension from GitHub into the
+rem  Downloads folder ("Vybiraem vmeste - rasshirenie") and shows what to click.
 rem  This batch part is ASCII only; the PowerShell code below is UTF-8 and is
 rem  read by PowerShell itself, so Cyrillic text works on any code page.
 rem  Nothing is written to the registry and no system settings are changed.
@@ -12,6 +12,8 @@ set "VV_SELF=%~f0"
 set "VV_ARGS=%*"
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$t=[IO.File]::ReadAllText($env:VV_SELF,[Text.Encoding]::UTF8);$i=$t.IndexOf([string][char]10+'#'+'POWERSHELL');if($i -lt 0){Write-Host 'Installer file is damaged, please download it again.';exit 3};$sb=[ScriptBlock]::Create($t.Substring($i+1));Invoke-Expression ('& $sb '+$env:VV_ARGS);exit $LASTEXITCODE"
 set "VV_CODE=%ERRORLEVEL%"
+rem 10 = installed, and the user asked to delete this installer file from Downloads
+if %VV_CODE% EQU 10 (goto) 2>nul & del "%~f0"
 rem 2+ = PowerShell itself could not start the installer: keep the window open
 if %VV_CODE% GEQ 2 pause
 endlocal & exit /b %VV_CODE%
@@ -25,7 +27,10 @@ endlocal & exit /b %VV_CODE%
 #   -NoPause                      do not wait for Enter at the end
 #   -Local                        copy the extension folder next to this file
 #                                 (..\ from extension\install) instead of GitHub
-#   -Target <folder>              install somewhere else (for tests)
+#   -Target <folder>              install into exactly this folder (for tests)
+#   -Downloads <folder>           pretend this is the Downloads folder (tests)
+#   -LegacyDir <folder>           old install location to migrate from (tests);
+#                                 default %LOCALAPPDATA%\VybiraemVmeste
 #   -GuiSnapshot <file.png>       render the helper window to a PNG and exit
 # ---------------------------------------------------------------------------
 param(
@@ -35,6 +40,8 @@ param(
   [switch]$NoPause,
   [switch]$Local,
   [string]$Target = '',
+  [string]$Downloads = '',
+  [string]$LegacyDir = '',
   [string]$GuiSnapshot = '',
   [string]$ZipUrl = 'https://github.com/Yaroslaz/markets-pars/archive/refs/heads/main.zip'
 )
@@ -45,6 +52,8 @@ if ([Console]::IsOutputRedirected) { [Console]::OutputEncoding = New-Object Syst
 try { $Host.UI.RawUI.WindowTitle = 'Выбираем вместе — установка расширения' } catch {}
 
 $AppTitle = 'Выбираем вместе'
+$FolderName = 'Выбираем вместе — расширение'
+$KeepNote = "Не удаляйте и не переносите папку «$FolderName» в Загрузках — браузер берёт расширение из неё."
 $SiteUrl = 'https://yaroslaz.github.io/markets-pars/'
 $HelpUrl = 'https://github.com/Yaroslaz/markets-pars/tree/main/extension/install'
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -111,6 +120,35 @@ function Get-FromLocal([string]$Work, [string]$From) {
 }
 
 # --- 2. Put them into the stable folder the browser loads from ------------------
+
+# The real Downloads folder: it may be redirected (OneDrive, another drive), so
+# ask Windows (Known Folder FOLDERID_Downloads) instead of guessing.
+function Get-DownloadsFolder {
+  try {
+    $p = (New-Object -ComObject Shell.Application).NameSpace('shell:Downloads').Self.Path
+    if ($p -and (Test-Path -LiteralPath $p -PathType Container)) { return $p }
+  } catch {}
+  try {
+    $raw = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction Stop).'{374DE290-123F-4565-9164-39C4925E467B}'
+    $p = if ($raw) { [Environment]::ExpandEnvironmentVariables($raw) } else { $null }
+    if ($p -and (Test-Path -LiteralPath $p -PathType Container)) { return $p }
+  } catch {}
+  return (Join-Path $env:USERPROFILE 'Downloads')
+}
+
+# Older installer versions used %LOCALAPPDATA%\VybiraemVmeste\extension. Remove that
+# exact folder, and only if it holds nothing but our extension.
+function Remove-LegacyInstall([string]$Dir, [string]$Name) {
+  if (-not $Dir -or -not (Test-Path -LiteralPath $Dir -PathType Container)) { return $false }
+  $items = @(Get-ChildItem -LiteralPath $Dir -Force)
+  $old = Read-Manifest (Join-Path $Dir 'extension')
+  if ($items.Count -ne 1 -or $items[0].Name -ne 'extension' -or -not $old -or $old.name -ne $Name) {
+    Say "Старую папку «$Dir» не трогаю: в ней не только наше расширение." DarkYellow
+    return $false
+  }
+  Remove-Item -LiteralPath $Dir -Recurse -Force
+  return $true
+}
 
 function Install-Files([string]$From, [string]$To, $NewManifest) {
   if (Test-Path -LiteralPath $To) {
@@ -182,8 +220,14 @@ function Start-Browser($B) {
 
 # --- 4. Instructions -------------------------------------------------------------
 
-function Show-ConsoleSteps($B, [string]$Path, [bool]$PathCopied) {
+function Show-ConsoleSteps($B, [string]$Path, [bool]$PathCopied, [bool]$Migrated) {
   Say
+  if ($Migrated) {
+    Say 'Раньше расширение лежало в скрытой папке AppData — теперь оно в «Загрузках».' White
+    Say "Сначала на странице расширений удалите старую карточку «$AppTitle»," White
+    Say 'затем подключите новую папку по шагам ниже.' White
+    Say
+  }
   Say "Осталось подключить расширение в браузере ($($B.Name)):" White
   Say
   Say "  1. Откройте новую вкладку, наберите в адресной строке  $($B.Url)  и нажмите Enter." Yellow
@@ -195,13 +239,14 @@ function Show-ConsoleSteps($B, [string]$Path, [bool]$PathCopied) {
   Say "     Путь к папке: $Path" DarkGray
   Say "  5. Готово! Если сайт «$AppTitle» был открыт — обновите его вкладку (F5)." Yellow
   Say
-  Say 'Не удаляйте и не переносите эту папку: браузер берёт расширение из неё.'
+  Say $KeepNote White
   Say '«Режим разработчика» не выключайте — иначе браузер отключит расширение.'
   Say 'Обновление: запустите этот файл ещё раз, затем на странице расширений нажмите'
   Say "круговую стрелку «Обновить» на карточке «$AppTitle»."
 }
 
-function Show-HelperWindow($Browsers, [string]$SelectedId, [string]$Path, [string]$Version, [bool]$Updated) {
+# Returns $true when the user ticked "delete the installer file".
+function Show-HelperWindow($Browsers, [string]$SelectedId, [string]$Path, [string]$Version, [bool]$Updated, [bool]$Migrated, [bool]$OfferSelfDelete) {
   Add-Type -AssemblyName System.Windows.Forms
   Add-Type -AssemblyName System.Drawing
   [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -253,12 +298,15 @@ function Show-HelperWindow($Browsers, [string]$SelectedId, [string]$Path, [strin
 
   $what = if ($Updated) { 'обновлено' } else { 'скачано' }
   [void](New-Text "Расширение «$AppTitle» $what (версия $Version)." $bold 0 $green)
-  $intro = if ($Updated) {
+  $intro = if ($Migrated) {
+    "Теперь расширение лежит в «Загрузках», а старая скрытая папка удалена. Поэтому один раз нужно переподключить его: на странице расширений (шаг 1) нажмите «Удалить» на старой карточке «$AppTitle», затем пройдите шаги 2–5."
+  } elseif ($Updated) {
     "Если расширение уже подключено в браузере, осталось только открыть страницу расширений (шаг 1) и нажать круговую стрелку «Обновить» на карточке «$AppTitle». Если ещё не подключено — пройдите все шаги, это делается один раз."
   } else {
     'Осталось подключить его в браузере — это делается один раз. Это окно будет поверх браузера, просто идите по шагам.'
   }
-  [void](New-Text $intro $font 4 $gray)
+  $introColor = if ($Migrated) { [System.Drawing.Color]::FromArgb(170, 60, 0) } else { $gray }
+  [void](New-Text $intro $font 4 $introColor)
 
   # browser choice (only when there is something to choose)
   $found = @($Browsers | Where-Object { $_.Exe })
@@ -290,11 +338,23 @@ function Show-HelperWindow($Browsers, [string]$SelectedId, [string]$Path, [strin
   $pathBox.Text = $Path; $pathBox.ReadOnly = $true; $pathBox.BorderStyle = 'None'
   $pathBox.BackColor = [System.Drawing.Color]::White; $pathBox.ForeColor = $gray
   $pathBox.Multiline = $true; $pathBox.WordWrap = $true
-  $pathBox.Width = $width - 18; $pathBox.Height = 2 * $font.Height + 4
+  $pathBox.Width = $width - 18; $pathBox.Height = 3 * $font.Height + 4
   $pathBox.Margin = New-Object System.Windows.Forms.Padding(18, 2, 0, 0)
   $flow.Controls.Add($pathBox)
   [void](New-Text "5. Готово! В списке появится карточка «$AppTitle». Если сайт был открыт — обновите его вкладку (F5). Значок расширения можно закрепить через кусочек пазла справа от адресной строки." $font 10)
-  [void](New-Text "Не удаляйте папку и не выключайте «Режим разработчика» — браузер берёт расширение из этой папки. Обновление: запустите этот файл ещё раз и нажмите круговую стрелку «Обновить» на карточке «$AppTitle»." $font 12 $gray)
+  [void](New-Text $KeepNote $bold 12 ([System.Drawing.Color]::FromArgb(170, 60, 0)))
+  [void](New-Text "«Режим разработчика» тоже не выключайте. Обновление: запустите установщик ещё раз (он обновит ту же папку) и нажмите круговую стрелку «Обновить» на карточке «$AppTitle»." $font 4 $gray)
+  $selfDelete = $null
+  if ($OfferSelfDelete) {
+    $selfDelete = New-Object System.Windows.Forms.CheckBox
+    $selfDelete.Text = 'Удалить файл установщика из «Загрузок» после закрытия окна'
+    $selfDelete.Checked = $true; $selfDelete.AutoSize = $true
+    $selfDelete.MaximumSize = New-Object System.Drawing.Size($width, 0)
+    $selfDelete.Margin = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
+    $flow.Controls.Add($selfDelete)
+    $hint = New-Text '(папка с расширением останется; для обновления установщик можно скачать снова)' $font 0 $gray
+    $hint.Margin = New-Object System.Windows.Forms.Padding(18, 0, 0, 0)
+  }
 
   $closeRow = New-Object System.Windows.Forms.FlowLayoutPanel
   $closeRow.AutoSize = $true
@@ -351,7 +411,9 @@ function Show-HelperWindow($Browsers, [string]$SelectedId, [string]$Path, [strin
     })
   }
   [void]$form.ShowDialog()
+  $deleteSelf = [bool]($selfDelete -and $selfDelete.Checked)
   $form.Dispose()
+  return $deleteSelf
 }
 
 # --- Main ------------------------------------------------------------------------
@@ -367,9 +429,16 @@ try {
   Say '  ---------------------------------------------'
   Say
 
-  $installRoot = Join-Path $env:LOCALAPPDATA 'VybiraemVmeste'
-  $dest = if ($Target) { [IO.Path]::GetFullPath($Target) } else { Join-Path $installRoot 'extension' }
+  $downloadsDir = if ($Downloads) { [IO.Path]::GetFullPath($Downloads) } else { Get-DownloadsFolder }
+  $dest = if ($Target) { [IO.Path]::GetFullPath($Target) } else { Join-Path $downloadsDir $FolderName }
+  $legacy = if ($LegacyDir) { [IO.Path]::GetFullPath($LegacyDir) } else { Join-Path $env:LOCALAPPDATA 'VybiraemVmeste' }
   $updated = [bool](Read-Manifest $dest)
+
+  # Temp folders of earlier runs that were interrupted (window closed mid-download).
+  # Only our own name pattern, and only older than an hour so a parallel run is safe.
+  Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Directory -Filter 'VybiraemVmeste-*' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^VybiraemVmeste-[0-9a-f]{32}$' -and $_.CreationTime -lt (Get-Date).AddHours(-1) } |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
   $work = Join-Path ([IO.Path]::GetTempPath()) ('VybiraemVmeste-' + [Guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $work -Force | Out-Null
@@ -407,10 +476,28 @@ try {
   Say "Готово: расширение «$($manifest.name)» версии $($manifest.version) $what в папку" Green
   Say "  $dest" Green
 
+  # Leftovers: the downloaded zip and unpacked files, then the old hidden install.
+  Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+  if (Test-Path -LiteralPath $work) { Say "Не удалось удалить временную папку «$work» — её можно удалить вручную." DarkYellow }
+  else { $work = $null; Say 'Временные файлы удалены.' }
+  $migrated = $false
+  if ($legacy -and -not $legacy.Equals($dest, [StringComparison]::OrdinalIgnoreCase)) {
+    $migrated = Remove-LegacyInstall $legacy $manifest.name
+    if ($migrated) { Say "Старая папка «$legacy» удалена." }
+  }
+
+  # Offer to delete the installer itself when it was simply downloaded into Downloads.
+  $offerSelfDelete = $false
+  if ($self -and -not $hasLocal -and -not $Target) {
+    $selfDir = [IO.Path]::GetFullPath((Split-Path -Parent $self)).TrimEnd('\') + '\'
+    $offerSelfDelete = $selfDir.StartsWith($downloadsDir.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)
+  }
+
   $browsers = Find-Browsers
   $found = @($browsers | Where-Object { $_.Exe })
   if ($Browser) {
-    $selected = $browsers | Where-Object { $_.Id -eq $Browser.ToLowerInvariant() } | Select-Object -First 1  } else {
+    $selected = $browsers | Where-Object { $_.Id -eq $Browser.ToLowerInvariant() } | Select-Object -First 1
+  } else {
     $defId = Get-DefaultBrowserId $browsers
     $selected = if ($defId) { $browsers | Where-Object { $_.Id -eq $defId } | Select-Object -First 1 }
                 elseif ($found.Count -gt 0) { $found[0] } else { $browsers[0] }
@@ -420,15 +507,16 @@ try {
   $guiShown = $false
   if (-not $NoGui) {
     try {
-      if ($updated -and -not $GuiSnapshot) {
+      if ($updated -and -not $migrated -and -not $GuiSnapshot) {
         Say
         Say 'Если расширение уже было подключено, осталось одно: на странице расширений' White
         Say "нажмите круговую стрелку «Обновить» на карточке «$AppTitle»." White
       }
       Say
       Say 'Открываю окно с подсказками…'
-      Show-HelperWindow $browsers $selected.Id $dest ([string]$manifest.version) $updated
+      $deleteSelf = @(Show-HelperWindow $browsers $selected.Id $dest ([string]$manifest.version) $updated $migrated $offerSelfDelete)[-1]
       $guiShown = $true
+      if ($deleteSelf -eq $true) { $exitCode = 10 }  # the .cmd part deletes the file
     } catch {
       Say "Окно с подсказками не открылось ($($_.Exception.Message)), пишу шаги здесь." DarkYellow
     }
@@ -436,7 +524,7 @@ try {
   if (-not $guiShown) {
     $copied = Set-ClipText $dest
     if (-not $GuiSnapshot) { [void](Start-Browser $selected) }
-    Show-ConsoleSteps $selected $dest $copied
+    Show-ConsoleSteps $selected $dest $copied $migrated
     Wait-End
   }
 } catch {
