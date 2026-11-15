@@ -653,7 +653,7 @@ function refreshViewer(full = false) {
       ${votesHtml(c)}
       ${c.partial && !c.edited.length ? `<div class="partial-note"><span class="msg">${src.name} не отдал фото и цену</span><button type="button" class="btn" data-action="edit-card" aria-label="Дополнить вручную" title="Дополнить вручную"><svg><use href="#i-edit"/></svg><span class="lbl">Дополнить</span></button></div>` : ''}
       <div class="open-row">
-        <a class="btn primary" href="${esc(appHref(c))}" ${IS_ANDROID ? '' : 'target="_blank"'} rel="noopener"><svg><use href="#i-open"/></svg><span>${IS_MOBILE ? 'Открыть в приложении' : `Открыть на ${src.name}`}</span></a>
+        <a class="btn primary" href="${esc(appHref(c))}" ${IS_ANDROID ? '' : 'target="_blank"'} rel="noopener"><svg><use href="#i-open"/></svg><span><span class="verb">Открыть в </span>${src.name}</span></a>
         <button type="button" class="icon-btn share" data-action="share-card" aria-label="Поделиться" title="Поделиться"><svg><use href="#i-share"/></svg></button>
       </div>
       <div class="updated">${c.priceNote ? `Цена ${esc(c.priceNote)} · ` : ''}обновлено ${ago(c.updatedAt)}</div>

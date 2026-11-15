@@ -390,8 +390,10 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .info .meta .rate svg { width: 15px; height: 15px; }
 .info .votes .vote { height: 44px; }
 .info .votes .vote svg { width: 22px; height: 22px; }
-.open-row { display: flex; gap: 8px; }
+.open-row { display: flex; gap: 8px; container-type: inline-size; }
 .open-row .btn.primary { flex: 1; height: 46px; }
+/* «Открыть в …» — когда места мало, остаётся только название магазина */
+@container (max-width: 330px) { .open-row .verb { display: none; } }
 .open-row .icon-btn { width: 46px; height: 46px; }
 .tools { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
 .tool {
