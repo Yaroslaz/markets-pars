@@ -38,6 +38,11 @@ public class MainActivity extends Activity {
     private ProductReader reader;
     private Uri siteUri;
     private ValueCallback<Uri[]> fileCallback;
+    /** Размеры системных панелей в CSS-пикселях: сверху, снизу, слева, справа. */
+    private float[] safeArea;
+    private boolean themeDark;
+    /** Тёмный слой на сайте (галерея) переопределяет цвет значков панелей; null — как у темы. */
+    private Boolean barsDark;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -72,6 +77,18 @@ public class MainActivity extends Activity {
                 openOutside(url);
                 return true;
             }
+
+            // У новой страницы своих CSS-переменных ещё нет — передаём размеры панелей заново
+            @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                barsDark = null;
+                pushSafeArea();
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                pushSafeArea();
+            }
         });
         site.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -95,7 +112,7 @@ public class MainActivity extends Activity {
                     (view, message, sourceOrigin, isMainFrame, reply) -> {
                         String data = message.getData();
                         if (!isMainFrame || data == null) return;
-                        if (data.startsWith("{\"type\":\"theme\"")) applyTheme(data.contains("\"dark\":true"));
+                        if (data.startsWith("{\"type\":\"theme\"") || data.startsWith("{\"type\":\"bars\"")) onLookMessage(data);
                         else reader.handle(data, reply);
                     });
         }
@@ -211,12 +228,23 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Тема выбирается на сайте: красим фон под системными панелями и цвет их значков. */
+    /** Сообщения сайта о внешнем виде: {"type":"theme","dark":…} — тема, {"type":"bars","dark":true|null} — тёмный слой (галерея). */
+    private void onLookMessage(String data) {
+        boolean dark = data.contains("\"dark\":true");
+        if (data.startsWith("{\"type\":\"theme\"")) {
+            themeDark = dark;
+            View root = (View) site.getParent();
+            root.setBackgroundColor(dark ? 0xFF0F0F12 : 0xFFF3F3F6);
+            getWindow().getDecorView().setBackgroundColor(dark ? 0xFF0F0F12 : 0xFFF3F3F6);
+        } else {
+            barsDark = data.contains("\"dark\":null") ? null : dark;
+        }
+        applyBarIcons(barsDark != null ? barsDark : themeDark);
+    }
+
+    /** Светлые значки статус-бара и навигации на тёмном фоне, тёмные — на светлом. */
     @SuppressWarnings("deprecation")
-    private void applyTheme(boolean dark) {
-        View root = (View) site.getParent();
-        root.setBackgroundColor(dark ? 0xFF0F0F12 : 0xFFF3F3F6);
-        getWindow().getDecorView().setBackgroundColor(dark ? 0xFF0F0F12 : 0xFFF3F3F6);
+    private void applyBarIcons(boolean dark) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             int light = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
                     | android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
@@ -230,20 +258,51 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Android 15+ рисует окно под системными панелями — отодвигаем содержимое и от клавиатуры. */
-    private static void applyInsets(View root) {
+    /**
+     * Сайт рисуется во весь экран, под статус-баром и панелью навигации (иначе над тёмной галереей видны
+     * светлые полосы). Размеры панелей передаём странице CSS-переменными --native-safe-*, а сайт сам
+     * отодвигает от них шапку и нижнюю панель. Отступ от клавиатуры по-прежнему делаем здесь.
+     */
+    private void applyInsets(View root) {
         root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int top, bottom, left, right, keyboard;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
-                        | WindowInsets.Type.ime());
-                v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-                return WindowInsets.CONSUMED;
+                Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                Insets ime = insets.getInsets(WindowInsets.Type.ime());
+                top = bars.top;
+                bottom = bars.bottom;
+                left = bars.left;
+                right = bars.right;
+                keyboard = ime.bottom;
+            } else {
+                @SuppressWarnings("deprecation")
+                int t = insets.getSystemWindowInsetTop(), b = insets.getSystemWindowInsetBottom(),
+                        l = insets.getSystemWindowInsetLeft(), r = insets.getSystemWindowInsetRight();
+                top = t;
+                left = l;
+                right = r;
+                // до Android 11 клавиатуру и панель навигации не различить: большая нижняя вставка — это клавиатура
+                boolean ime = b > 200 * getResources().getDisplayMetrics().density;
+                bottom = ime ? 0 : b;
+                keyboard = ime ? b : 0;
             }
-            @SuppressWarnings("deprecation")
-            int left = insets.getSystemWindowInsetLeft(), top = insets.getSystemWindowInsetTop(),
-                    right = insets.getSystemWindowInsetRight(), bottom = insets.getSystemWindowInsetBottom();
-            v.setPadding(left, top, right, bottom);
-            return insets;
+            // С открытой клавиатурой сайт сжимается над ней, а нижний отступ странице уже не нужен
+            v.setPadding(0, 0, 0, keyboard);
+            float density = getResources().getDisplayMetrics().density;
+            safeArea = new float[] { top / density, keyboard > 0 ? 0 : bottom / density, left / density, right / density };
+            pushSafeArea();
+            reader.setInsets(top, keyboard > 0 ? keyboard : bottom);
+            return WindowInsets.CONSUMED;
         });
+    }
+
+    private void pushSafeArea() {
+        if (safeArea == null) return;
+        String js = String.format(java.util.Locale.ROOT,
+                "(function(s){s.setProperty('--native-safe-t','%.1fpx');s.setProperty('--native-safe-b','%.1fpx');"
+                        + "s.setProperty('--native-safe-l','%.1fpx');s.setProperty('--native-safe-r','%.1fpx')})"
+                        + "(document.documentElement.style)",
+                safeArea[0], safeArea[1], safeArea[2], safeArea[3]);
+        site.evaluateJavascript(js, null);
     }
 }

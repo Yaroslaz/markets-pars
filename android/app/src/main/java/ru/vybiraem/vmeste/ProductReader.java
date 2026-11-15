@@ -139,6 +139,11 @@ final class ProductReader {
         });
     }
 
+    /** Окно рисуется под системными панелями — плашку и страницу магазина отодвигаем от них. */
+    void setInsets(int top, int bottom) {
+        layer.setPadding(0, top, 0, bottom);
+    }
+
     /** Вид, который лежит поверх скрытого браузера (сайт). */
     void setCover(View cover) {
         this.cover = cover;
