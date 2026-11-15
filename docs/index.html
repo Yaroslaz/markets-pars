@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Выбираем вместе</title>
   <meta name="description" content="Вставьте ссылки с Ozon, Wildberries, Яндекс Маркета и AliExpress — получите карточки товаров и голосуйте вдвоём.">
-  <meta name="theme-color" content="#f3f3f6" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#111114" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f3f3f6" media="(prefers-color-scheme: light)" data-scheme="light">
+  <meta name="theme-color" content="#0f0f12" media="(prefers-color-scheme: dark)" data-scheme="dark">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="styles.css?v=1.3.0">
+  <link rel="stylesheet" href="styles.css?v=1.5.0">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <script>
@@ -36,20 +36,56 @@
       var saved = null;
       try { saved = localStorage.getItem('mp_font'); } catch (e) {}
       window.MP_applyFont(saved);
+
+      // Тема: system — как в телефоне, light / dark — выбрана в настройках
+      window.MP_applyTheme = function (key) {
+        if (key !== 'light' && key !== 'dark') key = 'system';
+        var r = document.documentElement;
+        if (key === 'system') r.removeAttribute('data-theme'); else r.dataset.theme = key;
+        var metas = document.querySelectorAll('meta[name="theme-color"]');
+        for (var i = 0; i < metas.length; i++) {
+          var m = metas[i], own = m.getAttribute('data-scheme');
+          m.setAttribute('media', key === 'system' ? '(prefers-color-scheme: ' + own + ')' : (own === key ? 'all' : 'not all'));
+        }
+        var dark = key === 'dark' || (key === 'system' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+        // Цвет нижней системной полосы у установленного PWA берётся из манифеста — подключаем подходящий
+        var manifest = document.querySelector('link[rel="manifest"]');
+        if (manifest) manifest.setAttribute('href', dark ? 'manifest-dark.webmanifest' : 'manifest.webmanifest');
+        // Приложение для Android красит системные панели под тему сайта
+        try { window.MarketsNative && window.MarketsNative.postMessage(JSON.stringify({ type: 'theme', dark: dark })); } catch (e) {}
+        return key;
+      };
+      var theme = null;
+      try { theme = localStorage.getItem('mp_theme'); } catch (e) {}
+      window.MP_applyTheme(theme);
+      if (window.matchMedia) {
+        var mq = matchMedia('(prefers-color-scheme: dark)');
+        var onScheme = function () { if (!document.documentElement.dataset.theme) window.MP_applyTheme('system'); };
+        mq.addEventListener ? mq.addEventListener('change', onScheme) : mq.addListener(onScheme);
+      }
     })();
   </script>
   <script src="config.js"></script>
-  <script src="app.js?v=1.3.0" defer></script>
+  <script src="product-import.js?v=2.1.0" defer></script>
+  <script src="app.js?v=1.6.0" defer></script>
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
-    <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20.5s-7.5-4.6-9.3-9.4C1.6 8 3.4 4.5 7 4.5c2 0 3.5 1.1 5 3 1.5-1.9 3-3 5-3 3.6 0 5.4 3.5 4.3 6.6-1.8 4.8-9.3 9.4-9.3 9.4z"/></symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24"><path stroke-linejoin="round" stroke-linecap="round" d="M12 20.5s-7.5-4.6-9.3-9.4C1.6 8 3.4 4.5 7 4.5c2 0 3.5 1.1 5 3 1.5-1.9 3-3 5-3 3.6 0 5.4 3.5 4.3 6.6-1.8 4.8-9.3 9.4-9.3 9.4z"/></symbol>
     <linearGradient id="g-m" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5b9bff"/><stop offset="1" stop-color="#2f6bff"/></linearGradient>
     <linearGradient id="g-f" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff7ab6"/><stop offset="1" stop-color="#ff3d8b"/></linearGradient>
+    <!-- Просвет между сердцами: у синего вырезана полоска по контуру розового — без цветной обводки -->
+    <mask id="duo-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="28" height="24">
+      <rect width="28" height="24" fill="#fff"/>
+      <path d="M18.5 21.2s-6.6-4-8.2-8.3c-1-2.7.6-5.8 3.8-5.8 1.8 0 3.1 1 4.4 2.6 1.3-1.6 2.6-2.6 4.4-2.6 3.2 0 4.8 3.1 3.8 5.8-1.6 4.3-8.2 8.3-8.2 8.3z" fill="#000" stroke="#000" stroke-width="2.4" stroke-linejoin="round" transform="rotate(10 18.5 14)"/>
+    </mask>
     <symbol id="i-duo" viewBox="0 0 28 24">
-      <path d="M9 19.6S3 15.9 1.6 12.1C.7 9.6 2.2 6.8 5 6.8c1.6 0 2.8.9 4 2.4 1.2-1.5 2.4-2.4 4-2.4 2.8 0 4.3 2.8 3.4 5.3C15 15.9 9 19.6 9 19.6z" fill="url(#g-m)" transform="rotate(-12 9 13)"/>
-      <path d="M18.5 21.2s-6.6-4-8.2-8.3c-1-2.7.6-5.8 3.8-5.8 1.8 0 3.1 1 4.4 2.6 1.3-1.6 2.6-2.6 4.4-2.6 3.2 0 4.8 3.1 3.8 5.8-1.6 4.3-8.2 8.3-8.2 8.3z" fill="url(#g-f)" style="stroke: var(--tab-bg)" stroke-width="1.8" stroke-linejoin="round" transform="rotate(10 18.5 14)"/>
+      <g mask="url(#duo-cut)"><path d="M9 19.6S3 15.9 1.6 12.1C.7 9.6 2.2 6.8 5 6.8c1.6 0 2.8.9 4 2.4 1.2-1.5 2.4-2.4 4-2.4 2.8 0 4.3 2.8 3.4 5.3C15 15.9 9 19.6 9 19.6z" fill="url(#g-m)" transform="rotate(-12 9 13)"/></g>
+      <path d="M18.5 21.2s-6.6-4-8.2-8.3c-1-2.7.6-5.8 3.8-5.8 1.8 0 3.1 1 4.4 2.6 1.3-1.6 2.6-2.6 4.4-2.6 3.2 0 4.8 3.1 3.8 5.8-1.6 4.3-8.2 8.3-8.2 8.3z" fill="url(#g-f)" transform="rotate(10 18.5 14)"/>
     </symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/></g></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-theme-auto" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8.5"/></g><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18.5h10.5a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.5 9.6 4.5 4.5 0 0 0 7 18.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
@@ -111,10 +147,6 @@
       </div>
       <textarea name="links" rows="3" aria-label="Ссылки на товары" aria-describedby="parseInfo" placeholder="Вставьте ссылки на товары"></textarea>
       <p class="parse-info" id="parseInfo" role="status"></p>
-      <div class="product-recovery" id="productRecovery" hidden>
-        <p class="hint">Откройте страницу магазина, чтобы пройти проверку или сохранить фото товара.</p>
-        <div class="row" id="productRecoveryLinks"></div>
-      </div>
       <ul class="progress" id="progress" hidden></ul>
       <div class="row">
         <button type="button" class="btn paste" data-action="paste" title="Вставить из буфера обмена" aria-label="Вставить из буфера обмена"><svg><use href="#i-paste"/></svg><span>Вставить</span></button>
@@ -214,6 +246,13 @@
           </ol>
           <a class="btn cf" id="deployLink" target="_blank" rel="noopener"><svg><use href="#i-cloud"/></svg><span>Развернуть на Cloudflare</span></a>
         </div></div>
+      </div>
+      <div class="field"><span>Тема</span>
+        <div class="theme-switch" id="themeSwitch" role="radiogroup" aria-label="Тема">
+          <button type="button" role="radio" data-theme-key="system"><svg><use href="#i-theme-auto"/></svg><span>Как в системе</span></button>
+          <button type="button" role="radio" data-theme-key="light"><svg><use href="#i-sun"/></svg><span>Светлая</span></button>
+          <button type="button" role="radio" data-theme-key="dark"><svg><use href="#i-moon"/></svg><span>Тёмная</span></button>
+        </div>
       </div>
       <div class="field"><span>Шрифт</span>
         <div class="font-switch" id="fontSwitch">

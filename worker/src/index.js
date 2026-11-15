@@ -1,7 +1,7 @@
 import { parseProduct, productFromBrowser, mergeBrowserProduct, extractUrls, HttpError } from './parsers.js';
 import { accessConfig, requireSession, signIn } from './access.js';
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const STALE_MS = 6 * 60 * 60 * 1000; // через сколько обновлять цену/рейтинг в фоне
 const MAX_PHOTO_BYTES = 512 * 1024;
 const CARD_SELECT = 'SELECT c.*, (SELECT version FROM card_photos WHERE card_id = c.id) AS photo_version FROM cards c';
@@ -249,6 +249,15 @@ async function addCard(env, input, fromBrowser = false) {
   const now = Date.now();
   const id = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
 
+  // Приложение перечитало существующую карточку (например, заготовку по короткой ссылке Ozon),
+  // и у товара оказался другой номер — переносим карточку вместе с лайками на настоящий товар.
+  let removed = null;
+  if (imported && typeof input.cardId === 'string') {
+    const moved = await moveCard(env, b, input.cardId, imported, now);
+    if (moved instanceof Response) return moved;
+    removed = moved?.removed ?? null;
+  }
+
   for (let attempt = 0; attempt < 3; attempt++) {
     const existing = await env.DB.prepare('SELECT id, data FROM cards WHERE board = ? AND source = ? AND product_id = ?')
       .bind(b, product.source, product.productId)
@@ -258,7 +267,10 @@ async function addCard(env, input, fromBrowser = false) {
       const merged = imported ? mergeBrowserProduct(previous, imported.patch) : keepCompleteProduct(product, previous);
       const result = await updateProduct(env, existing, merged, now);
       if (result.meta.changes) {
-        return json({ duplicate: true, ...(imported ? { updated: true } : {}), card: await getCard(env, existing.id) });
+        return json({
+          duplicate: true, ...(imported ? { updated: true } : {}), ...(removed ? { removed } : {}),
+          card: await getCard(env, existing.id),
+        });
       }
       continue;
     }
@@ -269,6 +281,29 @@ async function addCard(env, input, fromBrowser = false) {
     if (result.meta.changes) return json({ card: await getCard(env, id) }, 201);
   }
   throw new HttpError(409, 'Карточка обновляется. Повторите добавление.');
+}
+
+async function moveCard(env, b, cardId, imported, now) {
+  const { product, patch } = imported;
+  const row = await env.DB.prepare('SELECT id, product_id, data FROM cards WHERE id = ? AND board = ? AND source = ?')
+    .bind(cardId, b, product.source).first();
+  if (!row || row.product_id === product.productId) return null;
+  const other = await env.DB.prepare('SELECT id FROM cards WHERE board = ? AND source = ? AND product_id = ?')
+    .bind(b, product.source, product.productId).first();
+  if (other) {
+    // Такой товар уже есть отдельной карточкой — пустую заготовку убираем, данные получит существующая
+    if (!JSON.parse(row.data).placeholder) return null;
+    await deleteCard(env, row.id);
+    return { removed: row.id };
+  }
+  const merged = mergeBrowserProduct({ ...JSON.parse(row.data), placeholder: undefined }, patch);
+  Object.assign(merged, { productId: product.productId, url: product.url });
+  if (!patch.title) merged.title = product.title;
+  const result = await env.DB.prepare(
+    'UPDATE cards SET product_id = ?, url = ?, data = ?, updated_at = ? WHERE id = ? AND product_id = ?'
+  ).bind(product.productId, product.url, JSON.stringify(merged), now, row.id, row.product_id).run();
+  if (!result.meta.changes) return null;
+  return json({ duplicate: true, updated: true, card: await getCard(env, row.id) });
 }
 
 function updateProduct(env, row, product, now) {

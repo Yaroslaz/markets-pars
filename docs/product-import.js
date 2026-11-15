@@ -1,10 +1,22 @@
 'use strict';
 
-const PRODUCT_IMPORT_PREFIX = 'MP-PRODUCT/1 ';
-
-// Функция целиком попадает в закладку и запускается пользователем на странице магазина.
-function copyOpenProduct(prefix) {
+// Читает открытую страницу товара Ozon, Яндекс Маркета или AliExpress.
+// Функция самодостаточна: приложение для Android получает её текст от сайта и выполняет
+// внутри скрытого браузера на странице магазина, поэтому снаружи ей ничего не доступно.
+// Возвращает { status: 'ok' | 'wait' | 'blocked', ... }.
+function readOpenProduct() {
   const url = new URL(location.href);
+  const text = (document.body?.innerText || '').slice(0, 4000);
+  const blocked =
+    /showcaptcha|\/captcha|\/punish|_____tmd_____|\/abt\//i.test(url.pathname + url.search) ||
+    !!document.querySelector(
+      'iframe[src*="captcha" i], .nc_wrapper, #nc_1_n1z, .baxia-dialog, [class*="smart-captcha" i], form[action*="checkcaptcha" i]'
+    ) ||
+    // Последняя пара — страница Ozon при блокировке по IP («Похоже, нет соединения… Инцидент: …»)
+    /доступ ограничен|подтвердите, что вы не робот|вы не робот|are you a robot|verify you are human|slide to verify/i.test(text) ||
+    (/выключите vpn/i.test(text) && /инцидент:/i.test(text));
+  if (blocked) return { status: 'blocked' };
+
   const ozon = /(^|\.)ozon\.(ru|by|kz)$/.test(url.hostname);
   const ali = /(^|\.)aliexpress\.(ru|com|us)$/.test(url.hostname);
   const market = /(^|\.)market\.yandex\.(ru|by|kz|com)$/.test(url.hostname);
@@ -12,10 +24,8 @@ function copyOpenProduct(prefix) {
     ? /^\/(?:product\/(?:[^/]+-)?\d{5,}|context\/detail\/id\/\d{5,})\/?$/
     : market ? /^\/(?:card|product(?:--[^/]+)?)\/(?:[^/]+\/)?\d{5,}\/?$/
       : /^\/item\/(?:[^/]+\/)?\d{6,}(?:\.html)?\/?$/;
-  if (url.protocol !== 'https:' || url.username || url.password || (!ozon && !ali && !market) || !productPath.test(url.pathname)) {
-    alert('Откройте страницу товара Ozon, Яндекс Маркета или AliExpress и запустите закладку снова.');
-    return;
-  }
+  // Пока идут редиректы короткой ссылки или проверка браузера — ждём
+  if (url.protocol !== 'https:' || (!ozon && !ali && !market) || !productPath.test(url.pathname)) return { status: 'wait' };
   url.search = '';
   url.hash = '';
 
@@ -40,8 +50,10 @@ function copyOpenProduct(prefix) {
 
   const gallery = document.querySelector(ozon
     ? '[data-widget*="gallery" i]'
-    : '[data-auto*="gallery" i], [data-zone-name*="gallery" i], [data-testid*="gallery" i]');
-  const priceWidget = document.querySelector(ozon ? '[data-widget="webPrice"]' : '[data-auto="mainPrice"]');
+    : '[data-auto*="gallery" i], [data-zone-name*="gallery" i], [data-testid*="gallery" i], [class*="gallery" i]');
+  const priceWidget = document.querySelector(ozon
+    ? '[data-widget="webPrice"], [data-widget*="price" i]'
+    : market ? '[data-auto="mainPrice"], [data-auto*="price" i]' : '[class*="price--current" i], [class*="Price_current" i], [class*="snow-price" i]');
   const heading = document.querySelector('h1')?.innerText;
   const ogImage = meta('og:image', 'og:image:secure_url');
   const imageHosts = ozon ? /(^|\.)ozone\.ru$/ : market
@@ -59,86 +71,46 @@ function copyOpenProduct(prefix) {
       return image.href.length <= 800 ? image.href : null;
     } catch { return null; }
   };
-  const productMeta = meta('og:type') === 'product' || (heading && cleanPhoto(ogImage));
-  const labelledPhotos = heading ? Array.from(document.querySelectorAll('main img[alt]'))
+  const labelledPhotos = heading ? Array.from(document.querySelectorAll('img[alt]'))
     .filter((image) => image.alt.trim().toLowerCase() === heading.trim().toLowerCase()) : [];
   const productImages = [...Array.from(gallery?.querySelectorAll('img') || []), ...labelledPhotos]
     .flatMap((image) => [image.dataset.src, image.dataset.original, image.currentSrc || image.src])
     .map(cleanPhoto).filter(Boolean);
-  if (!product && !productMeta && !gallery && !priceWidget && !productImages.length) {
-    alert('Данные товара пока не видны. Дождитесь загрузки карточки и пройдите проверку, если её показывает магазин.');
-    return;
-  }
 
-  const title = String(heading || product?.name || meta('og:title'))
+  const title = String(heading || product?.name || meta('og:title') || '')
     .trim().replace(/\s+/g, ' ').slice(0, 300);
-  const prices = [
-    ...[].concat(product?.offers || []).map((offer) => [offer?.price ?? offer?.lowPrice, offer?.priceCurrency]),
-    [meta('product:price:amount', 'og:price:amount', 'price'), meta('product:price:currency', 'og:price:currency', 'priceCurrency')],
-  ];
   const rubles = (value, currency) => {
-    const text = String(value ?? '').trim();
-    if (currency ? !/^RU[BR]$/i.test(currency.trim()) : !/₽$/.test(text)) return null;
-    const number = text.replace(/[₽\s]/g, '').replace(',', '.');
+    const raw = String(value ?? '').trim();
+    if (currency ? !/^RU[BR]$/i.test(currency.trim()) : !/₽$/.test(raw)) return null;
+    const number = raw.replace(/[₽\s  ]/g, '').replace(',', '.');
     return /^\d+(?:\.\d{1,2})?$/.test(number) ? Number(number) : null;
   };
-  const visiblePrices = [...new Set((priceWidget?.innerText?.match(/\d[\d \u00a0\u202f]*(?:[.,]\d{1,2})?\s*₽/g) || [])
-    .map((text) => rubles(text, '')).filter(Number.isFinite))];
-  const price = (visiblePrices.length === 1 ? visiblePrices[0] : null)
-    ?? prices.map(([value, currency]) => rubles(value, typeof currency === 'string' ? currency : ''))
-      .find(Number.isFinite) ?? null;
+  // В виджете цены бывает несколько сумм (с картой, без карты, старая) — первая обычно актуальная
+  const visiblePrices = (priceWidget?.innerText?.match(/\d[\d   ]*(?:[.,]\d{1,2})?\s*₽/g) || [])
+    .map((value) => rubles(value, '')).filter(Number.isFinite);
+  const metaPrices = [
+    ...[].concat(product?.offers || []).map((offer) => [offer?.price ?? offer?.lowPrice, offer?.priceCurrency]),
+    [meta('product:price:amount', 'og:price:amount', 'price'), meta('product:price:currency', 'og:price:currency', 'priceCurrency')],
+  ].map(([value, currency]) => rubles(value, typeof currency === 'string' ? currency : '')).filter(Number.isFinite);
+  const price = metaPrices[0] ?? visiblePrices[0] ?? null;
   const pictures = [
     ...[].concat(product?.image || []).map((image) => image?.contentUrl || image?.url || image),
     ogImage,
   ];
-  const images = [...new Set([...pictures.map(cleanPhoto).filter(Boolean), ...productImages])].slice(0, 10);
+  // Одно фото Маркета приходит в разных размерах (…/orig, …/600x800) — оставляем первый вариант
+  const photoKey = (href) => market ? href.replace(/\/[^/]*$/, '') : href;
+  const seen = new Set();
+  const images = [...pictures.map(cleanPhoto).filter(Boolean), ...productImages]
+    .filter((href) => !seen.has(photoKey(href)) && seen.add(photoKey(href))).slice(0, 10);
 
-  if (!title && price === null && !images.length) {
-    alert('На этой странице не удалось прочитать данные товара.');
-    return;
-  }
-
-  // Кнопка даёт Clipboard API собственное нажатие, в том числе в Safari.
-  const existing = document.getElementById('mp-product-copy');
-  if (existing?.open) return;
-  const dialog = document.createElement('dialog');
-  dialog.id = 'mp-product-copy';
-  dialog.setAttribute('aria-label', 'Скопировать карточку товара');
-  const form = document.createElement('form');
-  form.method = 'dialog';
-  const name = document.createElement('p');
-  name.textContent = title || 'Карточка товара';
-  const status = document.createElement('p');
-  status.setAttribute('role', 'status');
-  status.textContent = [price === null ? '' : price + ' ₽', images.length ? images.length + ' фото' : ''].filter(Boolean).join(' · ');
-  const field = document.createElement('textarea');
-  field.setAttribute('aria-label', 'Данные товара');
-  field.readOnly = true;
-  field.hidden = true;
-  field.value = prefix + JSON.stringify({ url: url.href, title, price, images });
-  const copy = document.createElement('button');
-  copy.type = 'button';
-  copy.textContent = 'Скопировать данные';
-  copy.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(field.value);
-      status.textContent = 'Скопировано. Вставьте данные в «Выбираем вместе».';
-    } catch {
-      field.hidden = false;
-      field.focus();
-      field.select();
-      status.textContent = 'Скопируйте выделенный текст и вставьте его в «Выбираем вместе».';
-    }
-  });
-  const close = document.createElement('button');
-  close.textContent = 'Закрыть';
-  form.append(name, status, field, copy, close);
-  dialog.append(form);
-  dialog.addEventListener('close', () => dialog.remove(), { once: true });
-  document.body.append(dialog);
-  dialog.showModal();
-}
-
-function productBookmarklet() {
-  return 'javascript:' + encodeURIComponent('void (' + copyOpenProduct.toString() + ')(' + JSON.stringify(PRODUCT_IMPORT_PREFIX) + ')');
+  // Одного заголовка мало: так выглядят и «товар удалён», и недогруженная карточка
+  if (price === null && !images.length) return { status: 'wait' };
+  return {
+    status: 'ok',
+    complete: !!title && price !== null && images.length > 0,
+    url: url.href,
+    title,
+    price,
+    images,
+  };
 }

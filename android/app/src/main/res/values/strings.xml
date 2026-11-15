@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Выбираем вместе</string>
+    <string name="check_blocked">Магазин просит проверку или ограничил доступ. Пройдите её — товар добавится сам.</string>
+    <string name="check_slow">Не получилось прочитать страницу автоматически. Если магазин показывает проверку, пройдите её.</string>
+    <string name="check_cancel">Отмена</string>
+    <string name="no_app">Нет приложения, чтобы открыть ссылку</string>
+</resources>

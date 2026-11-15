@@ -185,6 +185,68 @@ async function api(path, opts = {}) {
   return data;
 }
 
+/* ======================= Приложение для Android ======================= */
+
+// Приложение (папка android/) открывает этот сайт и встраивает в него объект MarketsNative.
+// По просьбе сайта оно незаметно загружает страницу товара в скрытом браузере телефона —
+// с IP и cookies телефона, поэтому магазины не блокируют, — и выполняет там readOpenProduct.
+// Браузер показывается, только если магазин просит пройти проверку.
+const nativeSources = new Set(['ozon', 'ym', 'ali']);
+const nativeApp = (() => {
+  const port = window.MarketsNative;
+  if (!port || typeof port.postMessage !== 'function' || typeof readOpenProduct !== 'function') return null;
+  const pending = new Map();
+  let seq = 0;
+  port.onmessage = (event) => {
+    let msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    const done = pending.get(msg?.id);
+    if (!done) return;
+    pending.delete(msg.id);
+    done(msg);
+  };
+  return {
+    read(url) {
+      return new Promise((resolve) => {
+        const id = ++seq;
+        pending.set(id, resolve);
+        port.postMessage(JSON.stringify({ type: 'read', id, url, script: '(' + readOpenProduct + ')()' }));
+      });
+    },
+  };
+})();
+
+// Добавляет или обновляет карточку по данным, прочитанным телефоном. null — если приложение не помогло.
+// cardId — карточка, которую перечитываем: если у товара другой номер (заготовка по короткой ссылке Ozon),
+// сервер перенесёт её на настоящий товар.
+async function importViaApp(board, url, source, cardId) {
+  if (!nativeApp || !nativeSources.has(source)) return null;
+  try {
+    const r = await nativeApp.read(url);
+    const data = r?.ok ? r.data : null;
+    if (!data?.url || (!data.title && data.price == null && !data.images?.length)) {
+      // Страницу прочитать не дали, но телефон уже раскрыл короткую ссылку до адреса товара —
+      // отдадим серверу полную ссылку: у карточки сразу будет настоящий номер и название из адреса
+      try {
+        const page = new URL(r?.url);
+        if (page.protocol === 'https:' && detectSource(page.hostname) === source &&
+            /:\d+$/.test(productKey(source, page) || '')) return { resolved: page.href };
+      } catch {}
+      return null;
+    }
+    const browserData = { title: data.title, price: data.price, images: data.images };
+    const res = await api('/api/cards/import', { method: 'POST', body: { board, url: data.url, browserData, cardId } });
+    if (res.removed && state.board === board) state.cards = state.cards.filter((c) => c.id !== res.removed);
+    return res;
+  } catch {
+    return null;
+  }
+}
+
 const accessDialog = $('#accessDialog');
 const accessForm = $('#accessForm');
 
@@ -471,11 +533,52 @@ function updateSum() {
   const total = priced.reduce((a, c) => a + c.price, 0);
   const n = list.length;
   const what = `${n} ${plural(n, 'товар', 'товара', 'товаров')}`;
-  const noPrice = n - priced.length;
-  bar.innerHTML = `${state.filter === 'both' ? '<svg class="duo"><use href="#i-duo"/></svg>' : '<svg><use href="#i-bag"/></svg>'}<span class="cnt">${what}${
-    noPrice && priced.length ? `, без цены ${noPrice}` : ''
-  }</span>${priced.length ? `<i class="sep"></i><b>${rub(total)}</b>` : ''}`;
+  const incomplete = list.filter(isIncomplete).length;
+  const bulk = state.bulkRefresh;
+  const refresh = bulk
+    ? `<button type="button" class="sum-refresh busy" data-action="stop-refresh" title="Остановить обновление"><svg><use href="#i-refresh"/></svg><span>${bulk.done} из ${bulk.total}</span></button>`
+    : incomplete
+      ? `<button type="button" class="sum-refresh" data-action="refresh-incomplete" title="Обновить цену и фото у товаров без данных"><svg><use href="#i-refresh"/></svg><span>Обновить ${incomplete}</span></button>`
+      : '';
+  bar.innerHTML = `${state.filter === 'both' ? '<svg class="duo"><use href="#i-duo"/></svg>' : '<svg><use href="#i-bag"/></svg>'}<span class="cnt">${what}</span>${priced.length ? `<i class="sep"></i><b>${rub(total)}</b>` : ''}${refresh}`;
   bar.hidden = false;
+}
+
+// Товар без цены или без фото — его стоит перечитать
+const isIncomplete = (c) => c.price == null || !c.images?.length;
+
+// «Обновить N»: по очереди перечитывает все товары на экране, у которых нет цены или фото.
+// В приложении для Android Ozon, Маркет и AliExpress читаются с телефона, остальное — сервером.
+async function refreshIncomplete() {
+  if (state.bulkRefresh) return;
+  const board = state.board;
+  const ids = visibleCards().filter(isIncomplete).map((c) => c.id);
+  if (!ids.length) return;
+  const run = (state.bulkRefresh = { done: 0, total: ids.length, stop: false });
+  let fixed = 0;
+  updateSum();
+  for (const id of ids) {
+    if (run.stop || state.board !== board || !state.unlocked) break;
+    const c = state.cards.find((x) => x.id === id);
+    if (c) {
+      const viaApp = !!nativeApp && nativeSources.has(c.source);
+      try {
+        const viaPhone = await importViaApp(board, c.url, c.source, id);
+        const r = viaPhone?.card ? viaPhone : await api(`/api/cards/${id}/refresh`, { method: 'POST', body: {} });
+        if (state.board === board) {
+          upsertCard(r.card);
+          if (!isIncomplete(withUploadedPhoto(r.card))) fixed++;
+        }
+      } catch {}
+      // Пауза между страницами магазина, чтобы он не принял нас за бота
+      if (viaApp) await new Promise((r) => setTimeout(r, 800 + Math.random() * 1500));
+    }
+    run.done++;
+    render();
+  }
+  state.bulkRefresh = null;
+  render();
+  toast(fixed ? `Дополнено ${fixed} из ${run.done}` : 'Новых данных не нашлось');
 }
 
 function setFilter(f) {
@@ -596,7 +699,6 @@ function autosize(el) {
 document.addEventListener('input', (e) => e.target.tagName === 'TEXTAREA' && autosize(e.target));
 
 function updateParseInfo() {
-  $('#productRecovery').hidden = true;
   autosize(addText);
   const { links, ignored } = extractLinks(addText.value);
   const info = $('#parseInfo');
@@ -605,20 +707,6 @@ function updateParseInfo() {
   else
     info.innerHTML = `Найдено <b>${links.length}</b>${ignored ? ` · пропущу ${ignored} ${plural(ignored, 'чужую ссылку', 'чужие ссылки', 'чужих ссылок')}` : ''}`;
   $('#addForm [type=submit] span').textContent = links.length > 1 ? `Добавить ${links.length}` : 'Добавить';
-}
-
-function showProductRecovery(items) {
-  $('#productRecoveryLinks').replaceChildren(...items.map(({ url, source, id }) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'btn';
-    button.dataset.action = 'check-product';
-    button.dataset.url = url;
-    if (id) button.dataset.cardId = id;
-    button.textContent = 'Проверка · ' + SOURCES[source].name;
-    return button;
-  }));
-  $('#productRecovery').hidden = false;
 }
 
 async function readClipboard() {
@@ -639,7 +727,6 @@ async function addLinks(text) {
     toast('Не нашёл ссылок на Ozon, WB, Маркет или AliExpress');
     return;
   }
-  $('#productRecovery').hidden = true;
   const shareText = links.length === 1 && links[0].source === 'ali' && text.length <= 3000 &&
     /^(?:Смотри, что есть на AliExpress!|I just found this on AliExpress:)/i.test(text.trim()) ? text : undefined;
   const list = $('#progress');
@@ -650,7 +737,6 @@ async function addLinks(text) {
   submit.disabled = true;
   const rows = [...list.children];
   const board = state.board;
-  const recovery = [];
   let added = 0, dups = 0, failed = 0;
 
   // 3 запроса параллельно — сервер парсит по одной ссылке за раз
@@ -661,11 +747,10 @@ async function addLinks(text) {
       const li = rows[i];
       const { url, source } = links[i];
       try {
-        const r = await api('/api/cards', { method: 'POST', body: { board, url, shareText } });
+        const viaApp = await importViaApp(board, url, source);
+        const r = viaApp?.card ? viaApp
+          : await api('/api/cards', { method: 'POST', body: { board, url: viaApp?.resolved || url, shareText } });
         if (state.board === board) upsertCard(r.card);
-        if (verificationSources.has(source) && !r.card.uploadedPhoto && !r.card.images?.length) {
-          recovery.push({ url: r.card.url, source, id: r.card.id });
-        }
         if (r.duplicate) dups++;
         else added++;
         li.className = r.duplicate ? 'dup' : 'ok';
@@ -673,7 +758,6 @@ async function addLinks(text) {
         li.querySelector('.u').textContent = r.card.title;
       } catch (e) {
         failed++;
-        if (verificationSources.has(source)) recovery.push({ url, source });
         li.className = 'err';
         li.querySelector('.spinner').outerHTML = `<span class="st" title="${esc(e.message)}">ошибка</span>`;
         li.querySelector('.u').textContent = e.message;
@@ -689,13 +773,8 @@ async function addLinks(text) {
   if (dups) parts.push(`уже были ${dups}`);
   if (failed) parts.push(`ошибок ${failed}`);
   toast(parts.join(', ').replace(/^./, (s) => s.toUpperCase()));
-  if (addDialog.open && addText.value === text && recovery.length) {
-    if (links.length === 1 && recovery[0].id) {
-      addText.value = recovery[0].url;
-      updateParseInfo();
-    }
-    $('#parseInfo').textContent = failed ? 'Некоторые ссылки требуют проверки.' : 'Магазин не передал фото.';
-    showProductRecovery(recovery);
+  if (failed && addDialog.open && addText.value === text) {
+    $('#parseInfo').textContent = 'Не все ссылки добавились — причина в списке ниже.';
   } else if (!failed && addText.value === text) {
     addText.value = '';
     setTimeout(() => addDialog.open && !addText.value && addDialog.close(), 700);
@@ -808,7 +887,6 @@ async function uploadPhoto() {
     upsertCard(result.card);
     render();
     if (verificationDialog.open && $('#verificationPhoto').dataset.cardId === id) verificationDialog.close();
-    if (addDialog.open && $('#productRecoveryLinks').children.length === 1) addDialog.close();
     if (state.openId === id) refreshViewer(true);
     toast('Фото добавлено');
   } catch (error) {
@@ -902,7 +980,9 @@ function refreshViewer(full = false) {
       ${c.partial && missing ? `<div class="partial-note"><span class="msg">Нет ${missing}</span><button type="button" class="btn" data-action="edit-card" aria-label="Дополнить вручную" title="Дополнить вручную"><svg><use href="#i-edit"/></svg><span class="lbl">Дополнить</span></button></div>` : ''}
       ${!imgs.length ? '<div class="row"><button type="button" class="btn" data-action="upload-photo">Добавить фото</button></div>' : ''}
       <div class="open-row">
-        ${!imgs.length && verificationSources.has(c.source)
+        ${!imgs.length && nativeApp && nativeSources.has(c.source)
+          ? '<button type="button" class="btn primary" data-action="refresh-card"><svg><use href="#i-refresh"/></svg><span>Обновить цену и фото</span></button>'
+          : !imgs.length && verificationSources.has(c.source)
           ? '<button type="button" class="btn primary" data-action="check-product"><svg><use href="#i-open"/></svg><span>Открыть проверку</span></button>'
           : `<a class="btn primary" href="${esc(appHref(c))}" ${IS_ANDROID ? '' : 'target="_blank"'} rel="noopener"><svg><use href="#i-open"/></svg><span><span class="verb">Открыть в </span>${src.name}</span></a>`}
         <button type="button" class="icon-btn share" data-action="share-card" aria-label="Поделиться" title="Поделиться"><svg><use href="#i-share"/></svg></button>
@@ -961,7 +1041,9 @@ function openLightbox(i) {
 async function refreshCard(id) {
   toast('Обновляю…');
   try {
-    const r = await api(`/api/cards/${id}/refresh`, { method: 'POST', body: {} });
+    const c = state.cards.find((x) => x.id === id);
+    const viaPhone = c && (await importViaApp(state.board, c.url, c.source, id));
+    const r = viaPhone?.card ? viaPhone : await api(`/api/cards/${id}/refresh`, { method: 'POST', body: {} });
     upsertCard(r.card);
     render();
     refreshViewer(true);
@@ -1098,6 +1180,7 @@ function askRole() {
 function openSettings() {
   const f = $('#settingsForm');
   $$('#roleSwitch [data-role]').forEach((b) => b.classList.toggle('active', b.dataset.role === state.role));
+  markTheme();
   markFont();
   previewFonts();
   f.apiUrl.value = state.api;
@@ -1267,6 +1350,20 @@ async function removeBoard(id) {
   }
 }
 
+/* ================================ Тема ================================ */
+
+function setTheme(key) {
+  store.set('theme', window.MP_applyTheme(key) === 'system' ? '' : key);
+  markTheme();
+}
+function markTheme() {
+  const cur = document.documentElement.dataset.theme || 'system';
+  $$('#themeSwitch [data-theme-key]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.themeKey === cur);
+    b.setAttribute('aria-checked', String(b.dataset.themeKey === cur));
+  });
+}
+
 /* =============================== Шрифты =============================== */
 
 function setFont(key) {
@@ -1309,6 +1406,8 @@ function bind() {
       const id = vote.closest('[data-id]')?.dataset.id || state.openId;
       return toggleVote(id, vote.dataset.vote, vote);
     }
+    const themeBtn = e.target.closest('.theme-switch [data-theme-key]');
+    if (themeBtn) return setTheme(themeBtn.dataset.themeKey);
     const fontBtn = e.target.closest('.font-switch [data-font]');
     if (fontBtn) return setFont(fontBtn.dataset.font);
     const role = e.target.closest('[data-role]');
@@ -1387,6 +1486,11 @@ function bind() {
         return c && copy(c.url);
       case 'refresh-card':
         return c && refreshCard(c.id);
+      case 'refresh-incomplete':
+        return refreshIncomplete();
+      case 'stop-refresh':
+        if (state.bulkRefresh) state.bulkRefresh.stop = true;
+        return toast('Останавливаю после текущего товара');
       case 'edit-card':
         return c && openEdit(c.id);
       case 'delete-card':

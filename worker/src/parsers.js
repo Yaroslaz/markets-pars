@@ -87,11 +87,31 @@ export async function parseProduct(inputUrl, shareText) {
     url = await resolveRedirects(url, source);
     source = detectSource(url) || source;
   }
-  if (needsResolve(url, source)) throw new HttpError(422, `Не удалось раскрыть короткую ссылку ${SOURCES[source].name} — вставьте полную ссылку на товар`);
+  if (needsResolve(url, source)) return placeholderProduct(inputUrl, source, shareText);
   const parser = { wb: parseWb, ym: parseYm, ozon: parseOzon, ali: parseAli }[source];
   const share = source === 'ali' ? aliShareData(inputUrl, shareText) : null;
   const product = await parser(url, share);
   if (!product?.productId) throw new HttpError(422, 'Не удалось определить товар по ссылке');
+  return product;
+}
+
+// Магазины часто не раскрывают короткие ссылки серверам Cloudflare (Ozon — всегда). Карточку всё равно создаём,
+// чтобы ссылка, добавленная с любого устройства, не терялась: приложение для Android или расширение браузера
+// потом раскроет её у себя и перенесёт заготовку на настоящий товар (moveCard в index.js).
+function placeholderProduct(inputUrl, source, shareText) {
+  const link = new URL(inputUrl);
+  link.hash = '';
+  const ozonCode = source === 'ozon' ? ozonShortCode(inputUrl) : null;
+  const key = ozonCode ? 't-' + ozonCode
+    : 'link-' + (link.hostname.replace(/^www\./, '') + link.pathname).replace(/[^\w-]+/g, '_').replace(/_+$/, '').slice(-80);
+  const product = {
+    ...partialFromSlug(source, key, ozonCode ? `https://ozon.ru/t/${ozonCode}` : link.href, ''),
+    title: `Товар ${SOURCES[source].name}`,
+    placeholder: true,
+  };
+  const share = source === 'ali' ? aliShareData(inputUrl, shareText) : null;
+  if (share?.title) Object.assign(product, { title: share.title, titleFromShare: true });
+  if (share?.price != null) Object.assign(product, { price: share.price, priceNote: 'из текста «Поделиться»' });
   return product;
 }
 
@@ -301,6 +321,17 @@ function ozonId(url) {
   const path = new URL(url).pathname;
   const slug = path.match(/\/product\/([^/]+)/)?.[1];
   return slug?.match(/(?:^|-)(\d{5,})$/)?.[1] ?? path.match(/^\/context\/detail\/id\/(\d{5,})\/?$/)?.[1];
+}
+
+// Код короткой ссылки «Поделиться» из приложения Ozon: https://ozon.ru/t/39Y1ISL
+function ozonShortCode(url) {
+  try {
+    const u = new URL(url);
+    if (!/^(?:www\.)?ozon\.(?:ru|by|kz)$/.test(u.hostname)) return null;
+    return u.pathname.match(/^\/t\/([A-Za-z0-9_-]{4,20})\/?$/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function parseOzon(url) {

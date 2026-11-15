@@ -12,7 +12,7 @@
   --m-soft: rgba(47, 123, 255, 0.12);
   --f: #ff4f9a;
   --f-soft: rgba(255, 79, 154, 0.12);
-  --grad: linear-gradient(135deg, #3d84ff, #ff4f9a);
+  --grad: linear-gradient(135deg, #3d7bff, #8568ff 33%, #9d5cff 50%, #de5cbe 83%, #ff4f9a);
   --star: #ffb321;
   --ok: #1f9d55;
   --danger: #e5484d;
@@ -28,8 +28,9 @@
   color-scheme: light;
 }
 
+/* Тёмная тема: по системе, если в настройках не выбрана светлая, или явно выбранная */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0f0f12;
     --surface: #1b1b20;
     --surface-2: #26262d;
@@ -44,6 +45,21 @@
     --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.5);
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #0f0f12;
+  --surface: #1b1b20;
+  --surface-2: #26262d;
+  --island: rgba(30, 30, 36, 0.94);
+  --text: #f2f2f5;
+  --muted: #9a9aa6;
+  --line: rgba(255, 255, 255, 0.08);
+  --accent: #f2f2f5;
+  --accent-text: #111114;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-island: 0 8px 28px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.5);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -256,6 +272,13 @@ main { padding: 0 10px calc(var(--dock-h) + var(--safe-b) + 12px); max-width: 13
 .sumbar .cnt { color: color-mix(in srgb, var(--text) 78%, transparent); overflow: hidden; text-overflow: ellipsis; }
 .sumbar b { font-weight: 700; font-variant-numeric: tabular-nums; }
 .sumbar .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--muted); flex: none; }
+.sumbar .sum-refresh {
+  display: inline-flex; align-items: center; gap: 5px; flex: none; height: 28px; margin-right: -10px; padding: 0 10px;
+  border: 0; border-radius: 14px; font: inherit; font-weight: 600; color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.sumbar .sum-refresh svg { width: 14px; height: 14px; color: currentColor; }
+.sumbar .sum-refresh.busy svg { animation: spin 1s linear infinite; }
 .dock-row { display: flex; gap: 8px; width: 100%; }
 .tabbar {
   flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); height: 54px; border-radius: 20px; padding: 0 4px; min-width: 0;
@@ -324,9 +347,6 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .parse-info { margin: -4px 0 0; font-size: 13px; color: var(--muted); min-height: 18px; }
 .parse-info b { color: var(--text); }
-.product-recovery { display: grid; gap: 8px; padding: 10px 12px; background: var(--surface-2); border-radius: 12px; }
-#addForm .product-recovery .row { flex-wrap: wrap; }
-.product-recovery .btn { background: var(--surface); }
 .verification-dialog { width: min(860px, calc(100% - 16px)); max-height: calc(100dvh - 16px); margin: auto; overflow: auto; }
 .verification-inner { background: var(--surface); border-radius: 18px; padding: 12px; display: grid; gap: 8px; }
 .verification-inner iframe { width: 100%; height: min(72dvh, 720px); border: 1px solid var(--surface-2); border-radius: 10px; background: #fff; }
@@ -473,6 +493,13 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .new-board input:focus { border-color: color-mix(in srgb, var(--text) 30%, transparent); }
 .new-board .btn { flex: none; height: 44px; }
 
+.theme-switch { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px; border-radius: 14px; background: var(--surface-2); }
+.theme-switch button {
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 9px 4px; border: 0; border-radius: 11px;
+  background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: 600; transition: background .15s ease, color .15s ease;
+}
+.theme-switch svg { width: 20px; height: 20px; }
+.theme-switch button.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
 .font-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .font-switch button {
   display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 12px; border-radius: 12px; border: 0;
