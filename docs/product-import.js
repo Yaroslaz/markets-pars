@@ -184,14 +184,15 @@ function readOpenProduct() {
   const ratingText = textOf(ratingBox).replace(/\s+/g, ' ');
   if (rating === null) rating = ratingOf(ratingText.match(/(?:^|[\s(])([0-5][.,]\d)(?=$|[\s•·/)])/)?.[1]);
   if (reviews === null) {
-    // Тысячи в отзывах пишут через пробел: «2 778», поэтому соседний рейтинг «4.8 2 778» не склеится в одно число
-    const count = '(\\d{1,3}(?:\\s\\d{3})+|\\d+(?:[.,]\\d+)?)\\s*(тыс\\.?|k|к|млн)?';
+    // Тысячи в отзывах пишут через пробел: «2 778». Число не должно начинаться внутри рейтинга:
+    // в «4.9 756 отзывов» иначе получалось 9 756
+    const count = '(?<![\\d.,])(\\d{1,3}(?:\\s\\d{3})+|\\d+(?:[.,]\\d+)?)\\s*(тыс\\.?|k|к|млн)?';
     const found = ratingText.match(new RegExp(count + '\\s*(?:отзыв|оцен)', 'i')) ||
       ratingText.match(new RegExp('\\(' + count + '\\)', 'i'));
     if (found) reviews = countOf(found[1] + (found[2] || ''));
   }
   // Тексты отзывов есть только в ld+json (у Маркета); на странице они подгружаются при прокрутке
-  const reviewsTop = [].concat(product?.review || []).flatMap((review) => {
+  let reviewsTop = [].concat(product?.review || []).flatMap((review) => {
     const body = clean(review?.reviewBody ?? review?.description, 300);
     if (!body) return [];
     const item = { text: body };
@@ -212,7 +213,7 @@ function readOpenProduct() {
     .filter((line, index) => line && !(index < 2 && /^описание$/i.test(line)) &&
       !/^(?:показать|читать|свернуть|развернуть)(?: полностью)?$/i.test(line))
     .join(' ');
-  const description = [product?.description, meta('og:description', 'description'), pageDescription]
+  let description = [product?.description, meta('og:description', 'description'), pageDescription]
     .map((value) => clean(value, 2000)).find((value) => value.length >= 20 && !advert.test(value)) || '';
 
   // Характеристики: таблицы dl/dt/dd, строки «название — значение» в блоке характеристик, ld+json additionalProperty
@@ -237,16 +238,19 @@ function readOpenProduct() {
       addSpec(textOf(name), textOf(value));
     }
   }
+  // Характеристики в состояниях Ozon: { name|title, values: [{ text }] } (компьютер) или { title, contentRS: [{ content }] } (телефон)
   const stateSpecs = (state) => {
     const found = [];
     const nodes = [state];
-    for (let i = 0; nodes.length && i < 3000; i++) {
+    for (let i = 0; nodes.length && i < 5000; i++) {
       const node = nodes.pop();
       if (!node || typeof node !== 'object') continue;
-      if (Array.isArray(node.values) && node.title) {
-        const name = typeof node.title === 'string' ? node.title
-          : [].concat(node.title?.textRs || []).map((part) => part?.content || '').join('');
-        found.push([name, node.values.map((part) => part?.text || '').filter(Boolean).join(', ')]);
+      const title = node.name ?? node.title;
+      const values = Array.isArray(node.values) ? node.values.map((part) => part?.text)
+        : Array.isArray(node.contentRS) ? node.contentRS.map((part) => part?.content) : null;
+      if (values && title) {
+        const name = typeof title === 'string' ? title : [].concat(title?.textRs || []).map((part) => part?.content || '').join('');
+        found.push([name, values.filter((part) => typeof part === 'string' && part.trim()).join(', ')]);
       } else nodes.push(...Object.values(node).reverse());
     }
     return found;
@@ -391,15 +395,153 @@ function readOpenProduct() {
 
   // Одного заголовка мало: так выглядят и «товар удалён», и недогруженная карточка
   if (price === null && !images.length) return { status: 'wait' };
+
+  // Полные описание, характеристики и отзывы магазины показывают только после прокрутки, а приложение
+  // читает страницу в скрытом окне. Поэтому первый вызов запускает запросы к тому же сайту (с куками
+  // покупателя) и кладёт результат в window.__vmesteExtra, а следующие опросы (каждые ~0,8 с) его забирают.
+  // Пока запросы идут, complete = false, но не дольше 3 с: цену, название и фото это не задерживает надолго.
+  const htmlText = (html) => (typeof html === 'string' && html
+    ? new DOMParser().parseFromString(html.replace(/<br\s*\/?>|<\/(?:p|div|li|h\d)>/gi, '\n'), 'text/html').body.textContent
+      .replace(/ㅤ/g, ' ')
+    : '');
+  // Данные виджетов Маркета: <noframes data-apiary="patch">{"widgets":{"@card/…":{"<id>":{…}}}}</noframes>
+  const patchData = (root) => Array.from(root?.querySelectorAll?.('noframes') || []).flatMap((node) => {
+    try {
+      return Object.entries(JSON.parse(node.textContent)?.widgets || {})
+        .flatMap(([name, byId]) => Object.values(byId || {}).map((data) => ({ name, data })));
+    } catch { return []; }
+  });
+  // Состояния виджетов Ozon из разметки (<div id="state-webCharacteristics-…" data-state="…">) — пары [имя, данные]
+  const statesOf = (root) => Array.from(root?.querySelectorAll?.('[id^="state-"][data-state]') || []).flatMap((node) => {
+    try { return [[node.id.match(/^state-([A-Za-z]+)/)?.[1] || '', JSON.parse(node.getAttribute('data-state'))]]; } catch { return []; }
+  });
+  const fetchText = async (path, headers) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    try {
+      const response = await fetch(path, { credentials: 'include', headers, signal: controller.signal });
+      return response.ok ? await response.text() : '';
+    } catch { return ''; } finally { clearTimeout(timer); }
+  };
+  const parseHtml = (html) => new DOMParser().parseFromString(html || '', 'text/html');
+  // Текст описания из состояния Ozon: пары «заголовок: текст» и строки text/content, без служебных полей
+  const stateText = (node, parts = [], depth = 0) => {
+    if (!node || typeof node !== 'object' || depth > 14 || parts.length > 300) return parts;
+    if (typeof node.title === 'string' && typeof node.content === 'string') {
+      if (!/^маркировка$/i.test(node.title.trim())) parts.push(node.title + ': ' + htmlText(node.content));
+      return parts;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (/^(?:trackingInfo|lexemes|params|img|imgLink|images?|video\w*|src\w*|link|action|common|testInfo)$/i.test(key)) continue;
+      if (typeof value === 'string') {
+        if (/^(?:text|content|title|richAnnotation|description)$/i.test(key)) parts.push(htmlText(value));
+      } else if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
+        if (/^(?:text|content)$/i.test(key)) parts.push(...value.map(htmlText));
+      } else stateText(value, parts, depth + 1);
+    }
+    return parts;
+  };
+  const ozonReview = (review) => {
+    const body = review?.content || {};
+    const mobile = [].concat(review?.reviewBody?.content || []);
+    return {
+      text: [body.comment, body.positive, body.negative, ...mobile.map((part) => part?.comment?.text ?? part?.text)]
+        .find((value) => typeof value === 'string' && value.trim()),
+      rating: body.score ?? review?.reviewHeader?.rating?.value,
+      author: [review?.author?.firstName, review?.author?.lastName].filter(Boolean).join(' ') ||
+        review?.reviewHeader?.author?.centerBlock?.title?.text || review?.reviewHeader?.title?.text,
+    };
+  };
+  const loadOzon = async () => {
+    const api = (path) => fetchText('/api/entrypoint-api.bx/page/json/v2?url=' + encodeURIComponent(path), { Accept: 'application/json' })
+      .then((body) => {
+        try {
+          return Object.entries(JSON.parse(body)?.widgetStates || {}).flatMap(([key, value]) => {
+            try { return [[key.match(/^[A-Za-z]+/)?.[0] || '', JSON.parse(value)]]; } catch { return []; }
+          });
+        } catch { return []; }
+      });
+    // Вторая часть страницы (описание, все характеристики) — по ссылке из виджета paginator, обычной страницей:
+    // запрос к API за ней Ozon отклоняет
+    const next = ozonState('paginator')?.nextPage;
+    const base = url.pathname.endsWith('/') ? url.pathname : url.pathname + '/';
+    const parts = await Promise.all([
+      typeof next === 'string' && /^\/product\//.test(next) ? fetchText(next).then((html) => statesOf(parseHtml(html))) : [],
+      /^\/product\//.test(base) ? api(base + 'features/') : [],
+      /^\/product\//.test(base) ? api(base + 'reviews/') : [],
+    ]);
+    const states = parts.flat();
+    return {
+      description: states.filter(([name]) => /Description|RichContent|LongCharacteristics/.test(name))
+        .flatMap(([, state]) => stateText(state)).join(' '),
+      specs: states.filter(([name]) => /Characteristics/.test(name) && !/Long/.test(name)).flatMap(([, state]) => stateSpecs(state)),
+      reviews: states.filter(([name]) => /ListReviews/.test(name)).flatMap(([, state]) => [].concat(state?.reviews || [])).map(ozonReview),
+    };
+  };
+  const marketSpecs = (data) => data.filter((item) => item.name === '@card/SpecsList')
+    .flatMap(({ data: list }) => [...[].concat(list?.specs || []), ...[].concat(list?.groups || []).flatMap((group) => [].concat(group?.items || []))])
+    .map((item) => [item?.name, item?.value]);
+  const loadMarket = async () => {
+    // Страница «Характеристики» (/card/<slug>/<id>/spec) отдаёт все характеристики и описание сразу в разметке
+    const data = patchData(parseHtml(await fetchText(url.pathname.replace(/\/$/, '') + '/spec' + location.search)));
+    return {
+      description: htmlText(data.find((item) => item.name === '@product-page-support/Description')?.data?.description),
+      specs: marketSpecs(data),
+      reviews: [],
+    };
+  };
+  let extra = window.__vmesteExtra;
+  if (!extra || extra.url !== url.href) {
+    extra = window.__vmesteExtra = { url: url.href, started: Date.now(), done: !ozon && !market, data: null };
+    if (!extra.done) {
+      const own = extra;
+      (ozon ? loadOzon() : loadMarket()).then((data) => { own.data = data; }, () => {}).finally(() => { own.done = true; });
+    }
+  }
+  const extraWaiting = !extra.done && Date.now() - extra.started < 3000;
+
+  // Маркет кладёт описание и часть характеристик в разметку заранее, но рисует их при прокрутке:
+  // данные виджетов лежат и в самой странице, и в <template id="second-screen">
+  if (market) {
+    const roots = [document, ...Array.from(document.querySelectorAll('template')).map((template) => template.content)];
+    const data = roots.flatMap(patchData);
+    if (!description) {
+      description = [htmlText(data.find((item) => item.name === '@card/AboutDescriptionV2')?.data?.shortDescription)]
+        .map((value) => clean(value, 2000)).find((value) => value.length >= 20 && !advert.test(value)) || '';
+    }
+    for (const { name, data: spec } of data) if (name === '@card/AboutSpecV2') addSpec(spec?.name, spec?.value);
+    for (const [name, value] of marketSpecs(data)) addSpec(name, value);
+  }
+  if (extra.data) {
+    if (!description) {
+      description = [extra.data.description].map((value) => clean(value, 2000))
+        .find((value) => value.length >= 20 && !advert.test(value)) || '';
+    }
+    for (const [name, value] of extra.data.specs || []) addSpec(name, value);
+  }
+  // Отзывы Ozon: из запроса выше, иначе закреплённый отзыв со страницы
+  if (ozon && !reviewsTop.length) {
+    reviewsTop = [...(extra.data?.reviews || []), ozonReview(ozonState('pinnedReview'))].flatMap((review) => {
+      const body = clean(review?.text, 300);
+      if (!body) return [];
+      const item = { text: body };
+      const stars = ratingOf(review.rating);
+      const author = clean(review.author, 60);
+      if (stars !== null) item.rating = stars;
+      if (author) item.author = author;
+      return [item];
+    }).filter((item, index, list) => list.findIndex((other) => other.text === item.text) === index).slice(0, 3);
+  }
+
   const result = {
     status: 'ok',
-    complete: !!title && price !== null && images.length > 0,
+    complete: !!title && price !== null && images.length > 0 && !extraWaiting,
     url: url.href,
     title,
     price,
     images,
   };
-  // Необязательные поля добавляем, только когда они нашлись: на complete они не влияют
+  // Необязательные поля добавляем, только когда они нашлись
   if (oldPrice !== null) result.oldPrice = oldPrice;
   if (priceNoCard !== null) result.priceNoCard = priceNoCard;
   if (rating !== null) result.rating = rating;
