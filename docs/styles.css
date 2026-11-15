@@ -83,6 +83,12 @@ svg { width: 20px; height: 20px; flex: none; }
 .btn.grow { flex: 1 1 0; }
 .btn.paste { flex: none; }
 #addForm .row { flex-wrap: nowrap; }
+#addForm .row .btn { height: 46px; border-radius: 14px; }
+/* На узком экране «Вставить» — только иконка, чтобы «Добавить N» помещалась целиком */
+@media (max-width: 419px) {
+  #addForm .btn.paste { width: 46px; padding: 0; }
+  #addForm .btn.paste span { display: none; }
+}
 .btn[disabled] { opacity: .5; pointer-events: none; }
 .btn.cf { background: #f38020; color: #fff; }
 .icon-btn {
@@ -297,7 +303,9 @@ dialog[open] { animation: rise .25s cubic-bezier(.2, .9, .3, 1) both; }
 .sheet-inner {
   background: var(--surface); border-radius: 22px 22px 0 0; padding: 12px 14px calc(14px + var(--safe-b));
   display: flex; flex-direction: column; gap: 12px; max-height: 92dvh; overflow: auto; overscroll-behavior: contain;
+  scrollbar-width: none;
 }
+.sheet-inner::-webkit-scrollbar, textarea::-webkit-scrollbar, .progress::-webkit-scrollbar { display: none; }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; }
 .sheet-head h2 { margin: 0; font-size: 18px; }
 .hint { margin: 0; color: var(--muted); font-size: 13px; }
@@ -307,7 +315,7 @@ textarea, .field input {
   background: var(--surface-2); outline: none; resize: none; font-size: 15px;
 }
 /* Поле растёт само: от 3 строк до ~40% экрана, дальше — прокрутка внутри */
-textarea { min-height: calc(3lh + 26px); max-height: 40dvh; overflow-y: auto; line-height: 1.4; scrollbar-width: thin; }
+textarea { min-height: calc(3lh + 26px); max-height: 40dvh; overflow-y: auto; line-height: 1.4; scrollbar-width: none; overscroll-behavior: contain; }
 .sheet-inner:focus { outline: none; }
 textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text) 30%, transparent); }
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); min-width: 0; }
@@ -316,8 +324,25 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .parse-info { margin: -4px 0 0; font-size: 13px; color: var(--muted); min-height: 18px; }
 .parse-info b { color: var(--text); }
-.progress { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow: auto; }
-.progress li { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 8px 10px; background: var(--surface-2); border-radius: 10px; min-width: 0; }
+.import-help summary { cursor: pointer; padding: 10px 0; }
+.import-help > div { display: grid; gap: 10px; justify-items: start; padding-bottom: 4px; }
+.import-help [hidden] { display: none; }
+.progress {
+  list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px;
+  max-height: 220px; overflow: auto; overscroll-behavior: contain; scrollbar-width: none;
+}
+.progress li { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 10px 12px; background: var(--surface-2); border-radius: 12px; min-width: 0; flex: none; }
+/* Вместо полосы прокрутки — мягкое затухание у края, за которым есть ещё строки */
+@property --fade-t { syntax: '<length>'; inherits: false; initial-value: 0px; }
+@property --fade-b { syntax: '<length>'; inherits: false; initial-value: 0px; }
+@keyframes edge-fade { from { --fade-t: 0px; --fade-b: 28px; } 8%, 92% { --fade-t: 28px; --fade-b: 28px; } to { --fade-t: 28px; --fade-b: 0px; } }
+@supports (animation-timeline: scroll()) {
+  .progress {
+    animation: edge-fade linear both; animation-timeline: scroll(self);
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-t), #000 calc(100% - var(--fade-b)), transparent);
+    mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-t), #000 calc(100% - var(--fade-b)), transparent);
+  }
+}
 .progress li .u { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .progress li .st { flex: none; font-weight: 500; }
 .progress li.ok .st { color: var(--ok); }
@@ -364,8 +389,8 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .stage { position: relative; }
 .track { display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; scrollbar-width: none; height: min(54dvh, 560px); width: 100%; }
 .track::-webkit-scrollbar { display: none; }
-.track .slide { flex: 0 0 100%; height: 100%; scroll-snap-align: center; display: flex; align-items: center; justify-content: center; position: relative; padding: 10px; }
-.track img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; cursor: zoom-in; border-radius: 10px; }
+.track .slide { flex: 0 0 100%; height: 100%; scroll-snap-align: center; display: flex; align-items: center; justify-content: center; position: relative; }
+.track img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; cursor: zoom-in; display: block; }
 .gallery .nav { position: absolute; top: 50%; transform: translateY(-50%); box-shadow: var(--shadow); display: none; background: var(--surface); }
 .gallery .nav.prev { left: 12px; } .gallery .nav.next { right: 12px; }
 .gallery .counter {

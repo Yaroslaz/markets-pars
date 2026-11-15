@@ -1,8 +1,6 @@
 // Парсеры маркетплейсов. Каждый возвращает нормализованный объект товара:
 // { source, productId, url, title, brand, price, oldPrice, priceNote, rating, reviews, images[], thumbs[], partial }
 
-import { fetchAliProduct, fetchOzonProduct } from './marketplace-apis.js';
-
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 const HEADERS = { 'User-Agent': UA, 'Accept-Language': 'ru-RU,ru;q=0.9', Accept: 'text/html,application/json;q=0.9,*/*;q=0.8' };
@@ -81,7 +79,7 @@ function needsResolve(url, source) {
   return false;
 }
 
-export async function parseProduct(inputUrl, env = {}, shareText) {
+export async function parseProduct(inputUrl, shareText) {
   let source = detectSource(inputUrl);
   if (!source) throw new HttpError(400, 'Ссылка не похожа на Ozon, Wildberries, Яндекс Маркет или AliExpress');
   let url = inputUrl;
@@ -92,7 +90,7 @@ export async function parseProduct(inputUrl, env = {}, shareText) {
   if (needsResolve(url, source)) throw new HttpError(422, `Не удалось раскрыть короткую ссылку ${SOURCES[source].name} — вставьте полную ссылку на товар`);
   const parser = { wb: parseWb, ym: parseYm, ozon: parseOzon, ali: parseAli }[source];
   const share = source === 'ali' ? aliShareData(inputUrl, shareText) : null;
-  const product = await parser(url, env, share);
+  const product = await parser(url, share);
   if (!product?.productId) throw new HttpError(422, 'Не удалось определить товар по ссылке');
   return product;
 }
@@ -311,14 +309,12 @@ function ozonId(url) {
   return slug?.match(/(?:^|-)(\d{5,})$/)?.[1] ?? path.match(/^\/context\/detail\/id\/(\d{5,})\/?$/)?.[1];
 }
 
-async function parseOzon(url, env) {
+async function parseOzon(url) {
   const id = ozonId(url);
   if (!id) throw new HttpError(400, 'Не нашёл товар Ozon в ссылке');
   const slug = new URL(url).pathname.match(/\/product\/([^/]+)/)?.[1] || '';
   const canonical = `https://www.ozon.ru/product/${slug || id}/`;
 
-  const fromApi = await fetchOzonProduct(id, env);
-  if (fromApi) return { ...fromApi, source: 'ozon', productId: id, url: canonical };
   const fromPage = await tryPlainHtml(canonical, 'ozon', id);
   if (fromPage) return { ...fromPage, source: 'ozon', productId: id, url: canonical };
   return partialFromSlug('ozon', id, canonical, slug);
@@ -333,11 +329,59 @@ function aliId(url) {
     ?? productId?.match(/^\d+$/)?.[0];
 }
 
-async function parseAli(url, env, share) {
+export function productFromBrowser(link, details) {
+  const source = detectSource(link);
+  const url = source && new URL(link);
+  const ozon = source === 'ozon';
+  const ali = source === 'ali' && /(^|\.)aliexpress\.(ru|com|us)$/.test(url.hostname);
+  const path = ozon
+    ? /^\/(?:product\/(?:[^/]+-)?\d{5,}|context\/detail\/id\/\d{5,})\/?$/
+    : /^\/item\/(?:[^/]+\/)?\d{6,}(?:\.html)?\/?$/;
+  if ((!ozon && !ali) || url.protocol !== 'https:' || url.username || url.password ||
+      !path.test(url.pathname) || url.pathname.length > 1000) {
+    throw new HttpError(400, 'Нужна полная ссылка на товар Ozon или AliExpress');
+  }
+  const id = ozon ? ozonId(link) : aliId(link);
+  if (!id) throw new HttpError(400, 'Не удалось определить товар по ссылке');
+  url.search = '';
+  url.hash = '';
+  const slug = ozon ? url.pathname.match(/\/product\/([^/]+)/)?.[1] || '' : '';
+  const product = partialFromSlug(source, id, url.href, slug);
+  const patch = {};
+  const title = typeof details.title === 'string' && details.title.trim().slice(0, 300);
+  if (title) Object.assign(patch, { title, titleFromBrowser: true, titleFromShare: false });
+  if (typeof details.price === 'number' && Number.isFinite(details.price) &&
+      details.price >= 0 && details.price <= Number.MAX_SAFE_INTEGER) {
+    Object.assign(patch, { price: details.price, priceNote: 'при импорте из браузера' });
+  }
+  const imageHosts = ozon ? /(^|\.)ozone\.ru$/ : /(^|\.)(alicdn\.com|aliexpress-media\.com)$/;
+  const images = Array.isArray(details.images) ? uniq(details.images.slice(0, 10).flatMap((value) => {
+    if (typeof value !== 'string' || value.length > 500) return [];
+    try {
+      const image = new URL(value);
+      if (image.protocol !== 'https:' || !imageHosts.test(image.hostname) || image.username || image.password) return [];
+      image.search = '';
+      image.hash = '';
+      return [image.href];
+    } catch { return []; }
+  })) : [];
+  if (images.length) Object.assign(patch, { images, thumbs: images });
+  if (!Object.keys(patch).length) throw new HttpError(400, 'В данных из браузера нет названия, цены или фото');
+  return { product: mergeBrowserProduct(product, patch), patch };
+}
+
+export function mergeBrowserProduct(product, patch) {
+  const result = { ...product, ...patch };
+  if (patch.price != null && patch.price !== product.price) result.oldPrice = null;
+  result.partial = result.price == null || !result.images?.length;
+  return result;
+}
+
+async function parseAli(url, share) {
   const id = aliId(url);
   if (!id) throw new HttpError(400, 'Не нашёл товар AliExpress в ссылке');
   const canonical = `https://aliexpress.ru/item/${id}.html`;
-  const data = await fetchAliProduct(id, env) ?? await tryPlainHtml(canonical, 'ali', id);
+  const data = await tryPlainHtml(canonical, 'ali', id);
   const product = data ? { ...data, source: 'ali', productId: id, url: canonical } : partialFromSlug('ali', id, canonical, '');
   if (!product.partial || !share) return product;
 

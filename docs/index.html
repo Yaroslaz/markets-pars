@@ -39,6 +39,7 @@
     })();
   </script>
   <script src="config.js"></script>
+  <script src="product-import.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -109,13 +110,23 @@
         <h2 id="addTitle">Добавить товары</h2>
         <button type="button" class="icon-btn ghost" data-action="close-dialog" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button>
       </div>
-      <textarea name="links" rows="3" placeholder="Вставьте ссылки или целый текст с ними — лишнее отброшу"></textarea>
-      <p class="parse-info" id="parseInfo"></p>
+      <textarea name="links" rows="3" aria-label="Ссылки или данные товаров" aria-describedby="parseInfo" placeholder="Вставьте ссылки или данные товаров"></textarea>
+      <p class="parse-info" id="parseInfo" role="status"></p>
       <ul class="progress" id="progress" hidden></ul>
       <div class="row">
         <button type="button" class="btn paste" data-action="paste" title="Вставить из буфера обмена" aria-label="Вставить из буфера обмена"><svg><use href="#i-paste"/></svg><span>Вставить</span></button>
         <button type="submit" class="btn primary grow" value="submit"><svg><use href="#i-plus"/></svg><span>Добавить</span></button>
       </div>
+      <details class="import-help" id="productImportHelp">
+        <summary>Импорт из Ozon и AliExpress</summary>
+        <div>
+          <p class="hint">В Safari или Chrome создайте закладку «Вместе». Откройте её настройки и вставьте код в поле адреса.</p>
+          <button type="button" class="btn" data-action="copy-product-bookmarklet">Скопировать код закладки</button>
+          <textarea id="productBookmarkletCode" rows="2" readonly hidden aria-label="Код закладки"></textarea>
+          <p class="hint" id="productBookmarkletHint">Откройте товар в том же браузере. Если магазин покажет проверку, пройдите её. Запустите закладку, затем скопируйте данные и вставьте их сюда.</p>
+          <a class="btn" id="productImportLink" target="_blank" rel="noopener" hidden>Открыть товар</a>
+        </div>
+      </details>
     </form>
   </dialog>
 

@@ -140,7 +140,7 @@ function detectSource(host) {
 function productKey(source, url) {
   const p = url.pathname;
   let id = null;
-  if (source === 'ozon') id = p.match(/\/product\/(?:[^/]*?-)?(\d{5,})/)?.[1];
+  if (source === 'ozon') id = p.match(/\/(?:product\/(?:[^/]+-)?|context\/detail\/id\/)(\d{5,})(?:\/|$)/)?.[1];
   if (source === 'wb') id = p.match(/\/catalog\/(\d+)/)?.[1];
   if (source === 'ym') id = p.match(/\/(?:card|product)[^/]*\/(?:[^/]+\/)?(\d{5,})/)?.[1];
   if (source === 'ali') id = p.match(/\/item\/(?:[^/]*\/)?(\d{6,})/)?.[1];
@@ -476,6 +476,35 @@ function bump(id, kind) {
 const addDialog = $('#addDialog');
 const addText = $('#addForm textarea');
 
+function readAddItems(text) {
+  const ordinary = [];
+  const imported = [];
+  let invalid = 0;
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed !== PRODUCT_IMPORT_PREFIX.trimEnd() && !trimmed.startsWith(PRODUCT_IMPORT_PREFIX)) {
+      ordinary.push(line);
+      continue;
+    }
+    try {
+      if (trimmed.length > 8000) throw new Error();
+      const { url, title, price, images } = JSON.parse(trimmed.slice(PRODUCT_IMPORT_PREFIX.length));
+      const product = new URL(url);
+      const source = detectSource(product.hostname);
+      const key = productKey(source, product);
+      if (product.protocol !== 'https:' || product.username || product.password ||
+          (source !== 'ozon' && source !== 'ali') || !/^(?:ozon|ali):\d+$/.test(key)) throw new Error();
+      imported.push({ url: product.href, source, key, browserData: { title, price, images } });
+    } catch {
+      invalid++;
+    }
+  }
+  const { links, ignored } = extractLinks(ordinary.join('\n'));
+  const items = new Map(links.map((link) => [link.key, link]));
+  for (const item of imported) items.set(item.key, item);
+  return { links: [...items.values()], ignored, invalid };
+}
+
 function openAdd(prefill) {
   if (!state.api) return openSettings();
   if (prefill != null) addText.value = prefill;
@@ -496,13 +525,34 @@ document.addEventListener('input', (e) => e.target.tagName === 'TEXTAREA' && aut
 
 function updateParseInfo() {
   autosize(addText);
-  const { links, ignored } = extractLinks(addText.value);
+  const { links, ignored, invalid } = readAddItems(addText.value);
   const info = $('#parseInfo');
+  const imported = links.filter((item) => item.browserData).length;
   if (!addText.value.trim()) info.textContent = '';
+  else if (invalid) info.textContent = 'Скопируйте данные товара заново и вставьте их целиком.';
   else if (!links.length) info.textContent = 'Ссылок на товары не нашёл';
   else
-    info.innerHTML = `Найдено: <b>${links.length}</b>${ignored ? ` · пропущу ${ignored} ${plural(ignored, 'чужую ссылку', 'чужие ссылки', 'чужих ссылок')}` : ''}`;
+    info.innerHTML = `Найдено: <b>${links.length}</b>${imported ? ` · из браузера ${imported}` : ''}${ignored ? ` · пропущу ${ignored} ${plural(ignored, 'чужую ссылку', 'чужие ссылки', 'чужих ссылок')}` : ''}`;
+  const link = $('#productImportLink');
+  const item = links.length === 1 ? links[0] : null;
+  link.hidden = !item || !!item.browserData || !['ozon', 'ali'].includes(item.source);
+  if (!link.hidden) link.href = item.url;
   $('#addForm [type=submit] span').textContent = links.length > 1 ? `Добавить ${links.length}` : 'Добавить';
+}
+
+async function copyProductBookmarklet() {
+  const code = productBookmarklet();
+  try {
+    await navigator.clipboard.writeText(code);
+    toast('Код закладки скопирован');
+  } catch {
+    const field = $('#productBookmarkletCode');
+    field.value = code;
+    field.hidden = false;
+    field.focus();
+    field.select();
+    toast('Скопируйте выделенный код');
+  }
 }
 
 async function readClipboard() {
@@ -516,7 +566,13 @@ async function readClipboard() {
 }
 
 async function addLinks(text) {
-  const { links } = extractLinks(text);
+  const submit = $('#addForm [type=submit]');
+  if (submit.disabled) return;
+  const { links, invalid } = readAddItems(text);
+  if (invalid) {
+    toast('Вставьте данные товара целиком');
+    return;
+  }
   if (!links.length) {
     toast('Не нашёл ссылок на Ozon, WB, Маркет или AliExpress');
     return;
@@ -528,23 +584,31 @@ async function addLinks(text) {
   list.innerHTML = links
     .map((l, i) => `<li data-i="${i}">${fav(l.source)}<span class="u">${esc(l.url.replace(/^https?:\/\/(www\.)?/, ''))}</span><span class="spinner"></span></li>`)
     .join('');
-  const submit = $('#addForm [type=submit]');
   submit.disabled = true;
-  let added = 0, dups = 0, failed = 0;
+  const rows = [...list.children];
+  const board = state.board;
+  const marketplaceLink = links.length === 1 && !links[0].browserData && ['ozon', 'ali'].includes(links[0].source);
+  let incompleteUrl = '';
+  let added = 0, updated = 0, dups = 0, failed = 0;
 
   // 3 запроса параллельно — сервер парсит по одной ссылке за раз
   let next = 0;
   const worker = async () => {
     while (next < links.length) {
       const i = next++;
-      const li = $(`li[data-i="${i}"]`, list);
+      const li = rows[i];
       try {
-        const r = await api('/api/cards', { method: 'POST', body: { board: state.board, url: links[i].url, shareText } });
-        upsertCard(r.card);
-        if (r.duplicate) dups++;
+        const { url, browserData } = links[i];
+        const r = await api('/api/cards', { method: 'POST', body: { board, url, shareText, browserData } });
+        if (state.board === board) upsertCard(r.card);
+        if (marketplaceLink && r.card.partial && (r.card.price == null || !r.card.images?.length)) {
+          incompleteUrl = r.card.url;
+        }
+        if (r.updated) updated++;
+        else if (r.duplicate) dups++;
         else added++;
-        li.className = r.duplicate ? 'dup' : 'ok';
-        li.querySelector('.spinner').outerHTML = `<span class="st">${r.duplicate ? 'уже есть' : 'добавлено'}</span>`;
+        li.className = r.duplicate && !r.updated ? 'dup' : 'ok';
+        li.querySelector('.spinner').outerHTML = `<span class="st">${r.updated ? 'обновлено' : r.duplicate ? 'уже есть' : 'добавлено'}</span>`;
         li.querySelector('.u').textContent = r.card.title;
       } catch (e) {
         failed++;
@@ -560,12 +624,20 @@ async function addLinks(text) {
 
   const parts = [];
   if (added) parts.push(`добавлено ${added}`);
+  if (updated) parts.push(`обновлено ${updated}`);
   if (dups) parts.push(`уже были ${dups}`);
   if (failed) parts.push(`ошибок ${failed}`);
   toast(parts.join(', ').replace(/^./, (s) => s.toUpperCase()));
-  if (!failed) {
+  if (addDialog.open && addText.value === text && marketplaceLink && (incompleteUrl || failed)) {
+    if (incompleteUrl) {
+      addText.value = incompleteUrl;
+      updateParseInfo();
+      $('#parseInfo').textContent = 'Карточка сохранена. Откройте товар, чтобы перенести недостающие данные.';
+    }
+    $('#productImportHelp').open = true;
+  } else if (!failed && addText.value === text) {
     addText.value = '';
-    setTimeout(() => addDialog.open && addDialog.close(), 700);
+    setTimeout(() => addDialog.open && !addText.value && addDialog.close(), 700);
   }
 }
 
@@ -1046,6 +1118,9 @@ function toast(msg) {
 /* ============================== События =============================== */
 
 function bind() {
+  if (IS_ANDROID) {
+    $('#productBookmarkletHint').textContent = 'Откройте товар в Chrome и пройдите проверку, если она появится. Наберите «Вместе» в адресной строке и выберите закладку в подсказках. Скопируйте данные и вставьте их сюда.';
+  }
   document.addEventListener('click', async (e) => {
     const vote = e.target.closest('[data-vote]');
     if (vote) {
@@ -1077,6 +1152,8 @@ function bind() {
     switch (actEl.dataset.action) {
       case 'add':
         return openAdd();
+      case 'copy-product-bookmarklet':
+        return copyProductBookmarklet();
       case 'paste': {
         const t = await readClipboard();
         if (t == null) return;
@@ -1087,7 +1164,8 @@ function bind() {
         const t = await readClipboard();
         if (t == null) return openAdd();
         openAdd(t);
-        if (extractLinks(t).links.length) addLinks(t);
+        const { links, invalid } = readAddItems(t);
+        if (!invalid && links.length && links.every((item) => !item.browserData)) addLinks(t);
         return;
       }
       case 'settings':
@@ -1188,10 +1266,11 @@ function bind() {
   document.addEventListener('paste', (e) => {
     if (e.target.closest('input, textarea') || document.querySelector('dialog[open]') || !state.api) return;
     const text = e.clipboardData?.getData('text') || '';
-    if (!extractLinks(text).links.length) return;
+    const { links, invalid } = readAddItems(text);
+    if (!links.length && !invalid) return;
     e.preventDefault();
     openAdd(text);
-    addLinks(text);
+    if (!invalid && links.every((item) => !item.browserData)) addLinks(text);
   });
   $('#boardsForm').addEventListener('submit', (e) => {
     e.preventDefault();

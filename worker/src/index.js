@@ -1,4 +1,4 @@
-import { parseProduct, extractUrls, HttpError } from './parsers.js';
+import { parseProduct, productFromBrowser, mergeBrowserProduct, extractUrls, HttpError } from './parsers.js';
 
 const VERSION = '1.1.0';
 const STALE_MS = 6 * 60 * 60 * 1000; // через сколько обновлять цену/рейтинг в фоне
@@ -77,7 +77,7 @@ async function route(request, env, ctx) {
   if (path === '/api/cards' && method === 'POST') return addCard(env, await body(request));
   if (path === '/api/parse' && method === 'POST') {
     const { url: link, shareText } = await body(request);
-    return json({ product: await parseProduct(firstUrl(link), env, shareText ?? link) });
+    return json({ product: await parseProduct(firstUrl(link), shareText ?? link) });
   }
 
   if (path === '/api/boards' && method === 'GET') return listBoards(env);
@@ -190,27 +190,37 @@ async function getCard(env, id) {
 async function addCard(env, input) {
   const b = board(input.board);
   const link = firstUrl(input.url);
-  const product = await parseProduct(link, env, input.shareText ?? input.url);
+  const imported = input.browserData == null ? null : productFromBrowser(link, input.browserData);
+  const product = imported ? imported.product : await parseProduct(link, input.shareText ?? input.url);
   const now = Date.now();
-
-  const existing = await env.DB.prepare('SELECT * FROM cards WHERE board = ? AND source = ? AND product_id = ?')
-    .bind(b, product.source, product.productId)
-    .first();
-  if (existing) {
-    const merged = keepCompleteProduct(product, JSON.parse(existing.data));
-    await env.DB.prepare('UPDATE cards SET data = ?, updated_at = ? WHERE id = ?')
-      .bind(JSON.stringify(merged), now, existing.id)
-      .run();
-    return json({ duplicate: true, card: await getCard(env, existing.id) });
-  }
-
   const id = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
-  await env.DB.prepare(
-    'INSERT INTO cards (id, board, source, product_id, url, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  )
-    .bind(id, b, product.source, product.productId, product.url, JSON.stringify(product), now, now)
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const existing = await env.DB.prepare('SELECT id, data FROM cards WHERE board = ? AND source = ? AND product_id = ?')
+      .bind(b, product.source, product.productId)
+      .first();
+    if (existing) {
+      const previous = JSON.parse(existing.data);
+      const merged = imported ? mergeBrowserProduct(previous, imported.patch) : keepCompleteProduct(product, previous);
+      const result = await updateProduct(env, existing, merged, now);
+      if (result.meta.changes) {
+        return json({ duplicate: true, ...(imported ? { updated: true } : {}), card: await getCard(env, existing.id) });
+      }
+      continue;
+    }
+    const result = await env.DB.prepare(
+      'INSERT INTO cards (id, board, source, product_id, url, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'ON CONFLICT (board, source, product_id) DO NOTHING'
+    ).bind(id, b, product.source, product.productId, product.url, JSON.stringify(product), now, now).run();
+    if (result.meta.changes) return json({ card: await getCard(env, id) }, 201);
+  }
+  throw new HttpError(409, 'Карточка обновляется. Повторите добавление.');
+}
+
+function updateProduct(env, row, product, now) {
+  return env.DB.prepare('UPDATE cards SET data = ?, updated_at = MAX(updated_at, ?) WHERE id = ? AND data = ?')
+    .bind(JSON.stringify(product), now, row.id, row.data)
     .run();
-  return json({ card: await getCard(env, id) }, 201);
 }
 
 async function refreshCard(env, id) {
@@ -218,13 +228,11 @@ async function refreshCard(env, id) {
   if (!row) throw new HttpError(404, 'Карточка не найдена');
   const now = Date.now();
   try {
-    const fresh = await parseProduct(row.url, env);
+    const fresh = await parseProduct(row.url);
     const merged = keepCompleteProduct(fresh, JSON.parse(row.data));
-    await env.DB.prepare('UPDATE cards SET data = ?, updated_at = ? WHERE id = ?')
-      .bind(JSON.stringify(merged), now, id)
-      .run();
+    await updateProduct(env, row, merged, now);
   } catch (e) {
-    await env.DB.prepare('UPDATE cards SET updated_at = ? WHERE id = ?').bind(now, id).run();
+    await env.DB.prepare('UPDATE cards SET updated_at = MAX(updated_at, ?) WHERE id = ?').bind(now, id).run();
     if (!(e instanceof HttpError)) console.error('refresh failed', id, e);
   }
   return getCard(env, id);
@@ -233,8 +241,9 @@ async function refreshCard(env, id) {
 function keepCompleteProduct(fresh, old) {
   const lostPrice = fresh.price == null && old.price != null;
   const lostPhotos = !fresh.images?.length && old.images?.length;
-  const lostSharedTitle = old.titleFromShare && !fresh.titleFromShare && fresh.price == null && !fresh.images?.length;
-  return fresh.partial && (!old.partial || lostPrice || lostPhotos || lostSharedTitle) ? old : fresh;
+  const lostImportedTitle = (old.titleFromBrowser || old.titleFromShare) && !fresh.titleFromShare &&
+    fresh.price == null && !fresh.images?.length;
+  return fresh.partial && (!old.partial || lostPrice || lostPhotos || lostImportedTitle) ? old : fresh;
 }
 
 const EDITABLE = ['title', 'price', 'oldPrice', 'rating', 'reviews', 'images'];
