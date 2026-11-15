@@ -2,6 +2,6 @@
 // Если оставить пустым, адрес можно ввести в «Настройках» на самом сайте — он запомнится в браузере
 // и будет вшит в ссылку «Поделиться подборкой».
 window.MP_CONFIG = {
-  apiUrl: '',
+  apiUrl: 'https://markets-pars.joroslav121.workers.dev',
   repo: 'https://github.com/Yaroslaz/markets-pars',
 };
