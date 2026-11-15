@@ -23,6 +23,8 @@ const IS_IOS = /iPhone|iPad|iPod/i.test(UA) || (/Macintosh/.test(UA) && navigato
 const IS_MOBILE = IS_ANDROID || IS_IOS;
 const POLL_MS = 20000;
 
+// Лёгкая отдача вибрацией; до первого касания страницы браузер её запрещает — тогда молчим
+const buzz = (pattern) => navigator.userActivation?.hasBeenActive !== false && navigator.vibrate?.(pattern);
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
@@ -59,6 +61,9 @@ const state = {
   loading: true,
   error: '',
   openId: null,
+  selecting: false, // режим выбора карточек (долгое нажатие)
+  selected: new Set(),
+  booting: !store.get('booted'), // самый первый запуск: показываем сердце над заготовками
 };
 
 function initState() {
@@ -264,13 +269,16 @@ function lockApp() {
   state.openId = null;
   state.error = '';
   state.loading = false;
+  exitSelection();
   for (const dialog of $$('dialog[open]')) {
     if (dialog !== accessDialog) dialog.close();
   }
   render();
   if (!accessDialog.open) {
     $('#accessStatus').textContent = '';
-    accessDialog.showModal();
+    const pass = accessForm.elements.password;
+    if (pass.type !== 'password') togglePassword($('.pass-toggle', accessForm));
+    openDialog(accessDialog);
   }
 }
 
@@ -279,7 +287,9 @@ async function signIn(event) {
   const button = $('button[type=submit]', accessForm);
   const password = accessForm.elements.password;
   const status = $('#accessStatus');
+  if (button.disabled) return;
   button.disabled = true;
+  button.classList.add('loading');
   status.textContent = '';
   password.removeAttribute('aria-invalid');
   try {
@@ -296,9 +306,27 @@ async function signIn(event) {
     status.textContent = error instanceof TypeError ? 'Не удалось подключиться. Проверьте интернет и повторите вход.' : error.message;
     password.setAttribute('aria-invalid', 'true');
     password.focus();
+    password.select();
+    // Неверный пароль — окно «встряхивается»
+    const box = $('.gate-inner', accessDialog) || accessForm;
+    box.classList.remove('shake');
+    void box.offsetWidth;
+    box.classList.add('shake');
+    buzz([12, 40, 12]);
   } finally {
     button.disabled = false;
+    button.classList.remove('loading');
   }
+}
+
+function togglePassword(btn) {
+  const input = accessForm.elements.password;
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  btn.setAttribute('aria-pressed', String(show));
+  btn.setAttribute('aria-label', show ? 'Скрыть пароль' : 'Показать пароль');
+  $('use', btn).setAttribute('href', show ? '#i-eye-off' : '#i-eye');
+  input.focus({ preventScroll: true });
 }
 
 async function loadCards({ silent = false } = {}) {
@@ -317,6 +345,7 @@ async function loadCards({ silent = false } = {}) {
     const pending = new Map(state.cards.filter((c) => c._pending).map((c) => [c.id, c]));
     state.cards = data.cards.map((c) => pending.get(c.id) || withUploadedPhoto(c));
     state.error = '';
+    if (state.booting) (state.booting = false), store.set('booted', '1');
   } catch (e) {
     if (!silent) state.error = e.message;
   }
@@ -435,8 +464,8 @@ function cardHtml(c) {
   const n = (c.images || []).length;
   return `<article class="card" data-id="${c.id}" tabindex="0">
     <div class="photo">${
-      img ? `<img ${photoSource(img)} alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : placeholderHtml(c)
-    }<span class="mk" title="${SOURCES[c.source].name}">${fav(c.source)}</span>${n > 1 ? `<span class="n">${n} фото</span>` : ''}</div>
+      img ? `<img ${photoSource(img)} alt="" loading="lazy" decoding="async" draggable="false" referrerpolicy="no-referrer">` : placeholderHtml(c)
+    }<span class="mk" title="${SOURCES[c.source].name}">${fav(c.source)}</span>${n > 1 ? `<span class="n">${n} фото</span>` : ''}<span class="sel-ck" aria-hidden="true"><svg><use href="#i-check"/></svg></span></div>
     <div class="body">
       ${priceHtml(c)}
       <h3 class="title">${esc(c.title)}</h3>
@@ -449,6 +478,12 @@ function cardHtml(c) {
 const cardSig = new Map();
 
 function render() {
+  pruneSelection();
+  renderGrid();
+  syncSelection();
+}
+
+function renderGrid() {
   const grid = $('#grid');
   const empty = $('#empty');
   updateSum();
@@ -466,12 +501,21 @@ function render() {
       <button class="btn" data-action="settings">Ввести адрес</button></div>`;
     return;
   }
-  if (state.loading) {
+  // Заготовки — только когда показать действительно нечего (кэш пуст, подборка ещё грузится)
+  if (state.loading && !state.cards.length) {
     empty.hidden = true;
-    grid.innerHTML = Array.from({ length: 6 }, () => '<div class="skeleton"><div class="photo"></div><div class="l"></div><div class="l s"></div></div>').join('');
+    if (grid.querySelector('.skeleton')) return;
+    const n = innerWidth >= 900 ? 10 : innerWidth >= 600 ? 9 : 6;
+    // При самом первом запуске над заготовками бьётся сердце-логотип
+    const boot = state.booting ? '<div class="boot" aria-hidden="true"><div class="logo"><svg><use href="#i-heart"/></svg></div>Загружаем подборку…</div>' : '';
+    grid.innerHTML = boot + Array.from({ length: n }, (_, i) =>
+      `<div class="skeleton" style="--i:${i}" aria-hidden="true"><div class="photo"></div><div class="body"><div class="l p"></div><div class="l"></div><div class="l s"></div><div class="vs"><div class="v"></div><div class="v"></div></div></div></div>`).join('');
+    grid.setAttribute('aria-busy', 'true');
     cardSig.clear();
     return;
   }
+  grid.removeAttribute('aria-busy');
+  if (grid.querySelector('.boot')) grid.innerHTML = '';
   const list = visibleCards();
   if (!list.length) {
     grid.innerHTML = '';
@@ -524,7 +568,9 @@ function render() {
 // Островок над таб-баром: сколько товаров на экране и на какую сумму
 function updateSum() {
   const bar = $('#sumbar');
-  const list = state.api && !state.loading ? visibleCards() : [];
+  // В режиме выбора островок считает только выбранные товары
+  const shown = state.api && !(state.loading && !state.cards.length) ? visibleCards() : [];
+  const list = state.selecting ? shown.filter((c) => state.selected.has(c.id)) : shown;
   if (!list.length) {
     bar.hidden = true;
     return;
@@ -535,7 +581,7 @@ function updateSum() {
   const what = `${n} ${plural(n, 'товар', 'товара', 'товаров')}`;
   const incomplete = list.filter(isIncomplete).length;
   const bulk = state.bulkRefresh;
-  const refresh = bulk
+  const refresh = state.selecting ? '' : bulk
     ? `<button type="button" class="sum-refresh busy" data-action="stop-refresh" title="Остановить обновление"><svg><use href="#i-refresh"/></svg><span>${bulk.done} из ${bulk.total}</span></button>`
     : incomplete
       ? `<button type="button" class="sum-refresh" data-action="refresh-incomplete" title="Обновить цену и фото у товаров без данных"><svg><use href="#i-refresh"/></svg><span>Обновить ${incomplete}</span></button>`
@@ -609,15 +655,10 @@ function filterMenu(root) {
     btn.title = `${state.source ? SOURCES[state.source].name : 'Все магазины'}, ${(SORTS.find((x) => x[0] === state.sort) || SORTS[0])[1].toLowerCase()}`;
     $$('.dd-opt', root).forEach((o) => o.setAttribute('aria-checked', o.dataset.v === state[o.dataset.k]));
   };
-  const close = () => {
-    root.classList.remove('open');
-    btn.setAttribute('aria-expanded', 'false');
-  };
+  const close = () => setDd(root, false);
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
-    const open = !root.classList.contains('open');
-    root.classList.toggle('open', open);
-    btn.setAttribute('aria-expanded', open);
+    setDd(root, !root.classList.contains('open'));
   });
   root.addEventListener('click', (e) => {
     const o = e.target.closest('.dd-opt');
@@ -638,8 +679,25 @@ function filterMenu(root) {
   });
   sync();
 }
-// Клик вне открытого меню закрывает его (клик внутри меню закрывает уже само действие)
-document.addEventListener('click', (e) => $$('.dd.open').forEach((d) => !d.contains(e.target) && d.classList.remove('open')));
+// Касание или прокрутка вне открытого меню только закрывает его: элемент под пальцем не срабатывает
+// (клик внутри меню закрывает уже само действие)
+let ddSwallowClick = false;
+function closeDdOutside(target) {
+  const open = $$('.dd.open').filter((d) => !d.contains(target));
+  open.forEach((d) => setDd(d, false));
+  return open.length > 0;
+}
+document.addEventListener('pointerdown', (e) => {
+  ddSwallowClick = closeDdOutside(e.target);
+}, true);
+document.addEventListener('click', (e) => {
+  if (!ddSwallowClick) return;
+  ddSwallowClick = false;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+}, true);
+document.addEventListener('scroll', (e) => closeDdOutside(e.target === document ? document.body : e.target), { capture: true, passive: true });
+document.addEventListener('wheel', (e) => closeDdOutside(e.target), { capture: true, passive: true });
 
 /* ============================== Голоса ================================ */
 
@@ -651,7 +709,7 @@ async function toggleVote(id, kind, btn) {
   const on = !c.likes[kind];
   c.likes = { ...c.likes, [kind]: on };
   c._pending = true;
-  if (navigator.vibrate) navigator.vibrate(8);
+  buzz(8);
   render();
   refreshViewer();
   bump(id, kind);
@@ -686,7 +744,7 @@ function openAdd(prefill) {
   $('#progress').hidden = true;
   $('#progress').innerHTML = '';
   updateParseInfo();
-  addDialog.showModal();
+  openDialog(addDialog);
   if (!IS_MOBILE && prefill == null) setTimeout(() => addText.focus(), 50);
 }
 
@@ -821,7 +879,7 @@ function openProductCheck(value, cardId) {
   const photo = $('#verificationPhoto');
   photo.hidden = !cardId;
   photo.dataset.cardId = cardId || '';
-  verificationDialog.showModal();
+  openDialog(verificationDialog);
   if (framed) frame.src = url.href;
 }
 
@@ -903,7 +961,7 @@ const viewer = $('#viewer');
 function openViewer(id) {
   state.openId = id;
   refreshViewer(true);
-  if (!viewer.open) viewer.showModal();
+  openDialog(viewer);
   history.replaceState(null, '', '#card=' + id);
 }
 
@@ -942,12 +1000,12 @@ function refreshViewer(full = false) {
   const imgs = c.images || [];
   const missing = [!imgs.length && 'фото', c.price == null && 'цены'].filter(Boolean).join(' и ');
   const src = SOURCES[c.source];
-  body.innerHTML = `
-    <div class="gallery">
-      <div class="stage">
-      <div class="viewer-top">
+  // Кнопки «⋯» и «✕» живут вне прокручиваемого содержимого и всегда остаются на месте
+  const top = $('#viewerTop');
+  $$('.dd.open', top).forEach((d) => setDd(d, false));
+  top.innerHTML = `
         <div class="dd more">
-          <button type="button" class="icon-btn" data-action="toggle-more" aria-haspopup="menu" aria-label="Ещё" title="Ещё"><svg><use href="#i-more"/></svg></button>
+          <button type="button" class="icon-btn float-btn" data-action="toggle-more" aria-haspopup="menu" aria-expanded="false" aria-label="Ещё" title="Ещё"><svg><use href="#i-more"/></svg></button>
           <div class="dd-menu" role="menu">
             <button type="button" class="dd-opt" role="menuitem" data-action="copy-card"><span class="ic"><svg><use href="#i-copy"/></svg></span><span class="lbl">Скопировать ссылку</span></button>
             <button type="button" class="dd-opt" role="menuitem" data-action="refresh-card"><span class="ic"><svg><use href="#i-refresh"/></svg></span><span class="lbl">Обновить цену и фото</span></button>
@@ -957,8 +1015,10 @@ function refreshViewer(full = false) {
             <button type="button" class="dd-opt danger" role="menuitem" data-action="delete-card"><span class="ic"><svg><use href="#i-trash"/></svg></span><span class="lbl">Удалить из подборки</span></button>
           </div>
         </div>
-        <button type="button" class="icon-btn" data-action="close-viewer" aria-label="Закрыть" title="Закрыть"><svg><use href="#i-close"/></svg></button>
-      </div>
+        <button type="button" class="icon-btn float-btn" data-action="close-viewer" aria-label="Закрыть" title="Закрыть"><svg><use href="#i-close"/></svg></button>`;
+  body.innerHTML = `
+    <div class="gallery">
+      <div class="stage">
       <div class="track" id="track">${
         imgs.length
           ? imgs.map((u, i) => `<div class="slide"><img ${photoSource(u)} alt="Фото ${i + 1}" ${i ? 'loading="lazy"' : ''} referrerpolicy="no-referrer" data-zoom="${i}"></div>`).join('')
@@ -1022,19 +1082,8 @@ function onTrackScroll() {
   }
 }
 
+// Лайтбокс (полноэкранные фото) — жесты и зум ниже, в разделе «Лайтбокс: жесты и зум»
 const lightbox = $('#lightbox');
-function openLightbox(i) {
-  const c = state.cards.find((x) => x.id === state.openId);
-  if (!c?.images?.length) return;
-  const t = $('#lbTrack');
-  t.innerHTML = c.images.map((u) => `<div class="slide"><img ${photoSource(u)} alt="" referrerpolicy="no-referrer"></div>`).join('');
-  loadPrivatePhotos(t);
-  lightbox.showModal();
-  requestAnimationFrame(() => (t.scrollLeft = i * t.clientWidth));
-  const upd = () => ($('#lbCounter').textContent = `${Math.round(t.scrollLeft / t.clientWidth) + 1} / ${c.images.length}`);
-  t.onscroll = upd;
-  upd();
-}
 
 /* ============================== Действия ============================== */
 
@@ -1055,7 +1104,14 @@ async function refreshCard(id) {
 
 async function deleteCard(id) {
   const c = state.cards.find((x) => x.id === id);
-  if (!c || !confirm(`Удалить «${c.title.slice(0, 60)}» из подборки?`)) return;
+  if (!c) return;
+  const ok = await confirmDialog({
+    title: 'Удалить товар?',
+    text: `«${c.title.slice(0, 80)}» и лайки к нему удалятся из подборки.`,
+    ok: 'Удалить',
+    danger: true,
+  });
+  if (!ok) return;
   try {
     await api(`/api/cards/${id}`, { method: 'DELETE' });
     state.cards = state.cards.filter((x) => x.id !== id);
@@ -1079,7 +1135,7 @@ function openEdit(id) {
   f.rating.value = c.rating ?? '';
   f.reviews.value = c.reviews ?? '';
   f.images.value = editedPhotoLinks(c);
-  editDialog.showModal();
+  openDialog(editDialog);
   autosize(f.images);
 }
 
@@ -1140,7 +1196,7 @@ async function share({ title, text, url }) {
   ]
     .map(([n, ic, href]) => `<a href="${href}" target="_blank" rel="noopener"><span class="ic">${ic}</span>${n}</a>`)
     .join('');
-  $('#shareDialog').showModal();
+  openDialog($('#shareDialog'));
 }
 
 function shareCard(c) {
@@ -1174,7 +1230,7 @@ function setRole(role) {
 
 const roleDialog = $('#roleDialog');
 function askRole() {
-  if (!roleDialog.open) roleDialog.showModal();
+  openDialog(roleDialog);
 }
 
 function openSettings() {
@@ -1188,7 +1244,7 @@ function openSettings() {
   setSetupOpen(!state.api);
   $('#apiStatus').textContent = '';
   $('#apiStatus').className = 'api-status';
-  settingsDialog.showModal();
+  openDialog(settingsDialog);
 }
 
 function setAccordionOpen(box, open) {
@@ -1251,6 +1307,15 @@ async function loadBoards() {
   } catch {}
   renderBoardName();
   if (boardsDialog.open) renderBoards();
+  if (moveDialog.open) renderMoveList();
+}
+
+function boardMeta(b) {
+  // для текущей подборки берём живые данные с экрана
+  const live = b.id === state.board && !state.loading;
+  const count = live ? state.cards.length : b.count;
+  const total = live ? state.cards.reduce((a, c) => a + (c.price || 0), 0) : b.total;
+  return count ? `${count} ${plural(count, 'товар', 'товара', 'товаров')}${total ? ' · ' + rub(total) : ''}` : 'пусто';
 }
 
 function renderBoards() {
@@ -1258,13 +1323,8 @@ function renderBoards() {
   const many = state.boards.length > 1;
   list.innerHTML = state.boards
     .map((b) => {
-      // для текущей подборки берём живые данные с экрана
-      const live = b.id === state.board && !state.loading;
-      const count = live ? state.cards.length : b.count;
-      const total = live ? state.cards.reduce((a, c) => a + (c.price || 0), 0) : b.total;
-      const meta = count ? `${count} ${plural(count, 'товар', 'товара', 'товаров')}${total ? ' · ' + rub(total) : ''}` : 'пусто';
       return `<li class="board-row ${b.id === state.board ? 'current' : ''}" data-board="${esc(b.id)}">
-        <button type="button" class="board-pick" data-action="pick-board"><span class="txt"><span class="bn">${esc(b.name)}</span><span class="bm">${meta}</span></span><svg class="ck"><use href="#i-check"/></svg></button>
+        <button type="button" class="board-pick" data-action="pick-board"><span class="txt"><span class="bn">${esc(b.name)}</span><span class="bm">${boardMeta(b)}</span></span><svg class="ck"><use href="#i-check"/></svg></button>
         <button type="button" class="icon-btn ghost" data-action="rename-board" aria-label="Переименовать" title="Переименовать"><svg><use href="#i-edit"/></svg></button>
         ${many ? `<button type="button" class="icon-btn ghost danger" data-action="delete-board" aria-label="Удалить" title="Удалить"><svg><use href="#i-trash"/></svg></button>` : ''}
       </li>`;
@@ -1276,12 +1336,13 @@ function openBoards() {
   if (!state.api) return openSettings();
   renderBoards();
   $('#boardsForm').boardName.value = '';
-  boardsDialog.showModal();
+  openDialog(boardsDialog);
   loadBoards();
 }
 
 function switchBoard(id, notify = true) {
   if (id === state.board) return;
+  exitSelection();
   state.board = id;
   store.set('board', id === 'main' ? '' : id);
   state.cards = [];
@@ -1338,7 +1399,15 @@ async function saveRename(row) {
 
 async function removeBoard(id) {
   const b = state.boards.find((x) => x.id === id);
-  if (!b || !confirm(`Удалить подборку «${b.name}» вместе со всеми товарами и лайками?`)) return;
+  if (!b) return;
+  const count = b.id === state.board && !state.loading ? state.cards.length : b.count;
+  const ok = await confirmDialog({
+    title: `Удалить подборку «${b.name}»?`,
+    text: `${count ? `Вместе с ней удалятся ${count} ${plural(count, 'товар', 'товара', 'товаров')} и все лайки. ` : ''}Это нельзя отменить.`,
+    ok: 'Удалить',
+    danger: true,
+  });
+  if (!ok) return;
   try {
     await api(`/api/boards/${id}`, { method: 'DELETE' });
     state.boards = state.boards.filter((x) => x.id !== id);
@@ -1385,12 +1454,912 @@ function previewFonts() {
   document.head.appendChild(l);
 }
 
+/* ============================ Кнопка «Назад» ============================ */
+
+// Единый стек слоёв: открытая карточка, лайтбокс, окна, режим выбора, выпадающие меню.
+// Каждый слой при открытии добавляет запись в историю, поэтому «Назад» (жест Android, кнопка браузера)
+// закрывает только верхний слой. Если слой закрылся своим интерфейсом (✕, Escape, тап мимо, смахивание),
+// лишние записи отматываются одним history.go(-n). Адрес страницы при этом не меняется.
+const layers = []; // [{ key, close }]
+let unwind = 0; // записей истории, которые осталось отмотать (их слои уже закрыты)
+let owed = 0; // записей, которые надо добавить, когда закончится наша перемотка
+let traversing = 0; // наши history.go() в пути: их popstate слои не закрывает
+let unwindTimer = 0;
+let traverseGuard = 0;
+
+function pushLayer(key, close) {
+  if (layers.some((l) => l.key === key)) return;
+  layers.push({ key, close });
+  if (unwind) {
+    // Запись закрытого слоя ещё не отмотана — используем её для нового слоя
+    unwind--;
+    history.replaceState({ ...(history.state || {}), layer: layers.length }, '');
+  } else if (traversing) owed++;
+  else history.pushState({ ...(history.state || {}), layer: layers.length }, '');
+}
+
+// Слой закрылся сам: убираем его (и всё, что открыто поверх него) и отматываем историю
+function popLayer(key) {
+  const i = layers.findIndex((l) => l.key === key);
+  if (i < 0) return;
+  const gone = layers.splice(i);
+  for (const l of gone.slice(1).reverse()) l.close();
+  for (let k = 0; k < gone.length; k++) owed ? owed-- : unwind++;
+  if (unwind && !unwindTimer) unwindTimer = setTimeout(flushUnwind, 0);
+}
+
+function flushUnwind() {
+  unwindTimer = 0;
+  if (!unwind || traversing) return;
+  const n = unwind;
+  unwind = 0;
+  traversing++;
+  history.go(-n);
+  // Если браузер не смог перейти (записи пропали), не зависаем в ожидании popstate
+  clearTimeout(traverseGuard);
+  traverseGuard = setTimeout(() => traversing && settleTraverse(), 800);
+}
+
+function settleTraverse() {
+  traversing = 0;
+  clearTimeout(traverseGuard);
+  for (; owed > 0; owed--) history.pushState({ ...(history.state || {}), layer: layers.length - owed + 1 }, '');
+  if (unwind) flushUnwind();
+}
+
+window.addEventListener('popstate', () => {
+  if (traversing) {
+    traversing--;
+    if (!traversing) settleTraverse();
+    return;
+  }
+  // «Назад» съел запись уже закрытого слоя — больше ничего не закрываем
+  if (unwind) return void unwind--;
+  layers.pop()?.close();
+});
+
+// Для приложения Android: true — закрыли верхний слой, false — закрывать нечего (можно выходить)
+window.mpHandleBack = () => {
+  const top = layers[layers.length - 1];
+  if (!top) return false;
+  top.close();
+  return true;
+};
+
+// Окно входа и выбор роли «Назад» не закрывает: без них пользоваться сайтом нельзя
+const pinnedDialogs = () => [accessDialog, roleDialog];
+function openDialog(d) {
+  if (d.open) return;
+  d.showModal();
+  if (!pinnedDialogs().includes(d)) pushLayer(d, () => d.open && d.close());
+}
+
+// Выпадающее меню — тоже слой: «Назад» сначала закрывает его
+function setDd(dd, open) {
+  if (!dd || dd.classList.contains('open') === open) return;
+  dd.classList.toggle('open', open);
+  $(':scope > .dd-btn, :scope > [data-action="toggle-more"]', dd)?.setAttribute('aria-expanded', String(open));
+  if (open) pushLayer(dd, () => setDd(dd, false));
+  else popLayer(dd);
+}
+
+/* ============================ Подтверждение ============================ */
+
+// Своё окно вместо системного confirm(): в тон сайту, со светлой и тёмной темой.
+// Возвращает промис: true — подтвердили, false — отменили (кнопкой, Escape или тапом мимо окна).
+const confirmBox = $('#confirmDialog');
+let confirmDone = null;
+let confirmReturnFocus = null;
+
+function confirmDialog({ title, text = '', ok = 'OK', cancel = 'Отмена', danger = false }) {
+  confirmDone?.(false);
+  $('#confirmTitle').textContent = title;
+  const p = $('#confirmText');
+  p.textContent = text;
+  p.hidden = !text;
+  const okBtn = $('#confirmOk');
+  const cancelBtn = $('button[value=cancel]', confirmBox);
+  okBtn.textContent = ok;
+  okBtn.className = `btn ${danger ? 'danger' : 'primary'}`;
+  cancelBtn.textContent = cancel;
+  confirmBox.returnValue = '';
+  confirmReturnFocus = document.activeElement;
+  return new Promise((resolve) => {
+    confirmDone = (value) => {
+      confirmDone = null;
+      resolve(value);
+    };
+    openDialog(confirmBox);
+    // Для опасного действия фокус на «Отмена», чтобы случайный Enter ничего не удалил
+    (danger ? cancelBtn : okBtn).focus();
+  });
+}
+
+function onConfirmClose() {
+  confirmDone?.(confirmBox.returnValue === 'ok');
+  const back = confirmReturnFocus;
+  confirmReturnFocus = null;
+  if (back?.isConnected && (document.activeElement === document.body || !document.activeElement)) back.focus?.({ preventScroll: true });
+}
+
+/* ============================ Режим выбора ============================ */
+
+// Долгое нажатие на карточку включает выбор: касания отмечают карточки, снизу — «Перенести» и «Удалить».
+const LONG_PRESS_MS = 450;
+const selbar = $('#selbar');
+const selactions = $('#selactions');
+const moveDialog = $('#moveDialog');
+
+function enterSelection(id) {
+  if (!state.unlocked || state.loading || !state.api) return;
+  $$('.dd.open').forEach((d) => setDd(d, false));
+  if (!state.selecting) {
+    state.selecting = true;
+    state.selected = new Set();
+    // «Назад» (Android, браузер, Escape) выходит из режима выбора, а не со страницы
+    pushLayer('select', exitSelection);
+  }
+  if (id) state.selected.add(id);
+  syncSelection();
+}
+
+function exitSelection() {
+  if (!state.selecting) return;
+  state.selecting = false;
+  state.selected.clear();
+  syncSelection();
+  popLayer('select');
+}
+
+function toggleSelected(id) {
+  if (state.selected.has(id)) state.selected.delete(id);
+  else state.selected.add(id);
+  syncSelection();
+}
+
+function selectAll() {
+  const ids = visibleCards().map((c) => c.id);
+  const all = ids.length && ids.every((id) => state.selected.has(id));
+  state.selected = new Set(all ? [] : ids);
+  syncSelection();
+}
+
+// Выбранными остаются только карточки, которые сейчас на экране (фильтр, удаление другим человеком)
+function pruneSelection() {
+  if (!state.selecting || state.loading) return;
+  const ids = new Set(visibleCards().map((c) => c.id));
+  for (const id of state.selected) if (!ids.has(id)) state.selected.delete(id);
+}
+
+function syncSelection() {
+  const on = state.selecting;
+  document.body.classList.toggle('selecting', on);
+  selbar.hidden = !on;
+  selactions.hidden = !on;
+  for (const el of $$('#grid .card')) {
+    const picked = on && state.selected.has(el.dataset.id);
+    el.classList.toggle('selected', picked);
+    if (on) el.setAttribute('aria-selected', String(picked));
+    else el.removeAttribute('aria-selected');
+  }
+  updateSum();
+  if (!on) return;
+  const n = state.selected.size;
+  $('#selCount').textContent = n ? `Выбрано ${n}` : 'Выберите товары';
+  const total = visibleCards().length;
+  const all = total > 0 && n === total;
+  $('.sel-all span', selbar).textContent = all ? 'Снять все' : 'Выбрать все';
+  $$('button', selactions).forEach((b) => (b.disabled = !n));
+}
+
+// Карточки плавно исчезают, прежде чем пропасть из сетки
+function animateOut(ids) {
+  const els = ids.map((id) => $(`#grid .card[data-id="${CSS.escape(id)}"]`)).filter(Boolean);
+  if (!els.length || matchMedia('(prefers-reduced-motion: reduce)').matches) return Promise.resolve();
+  els.forEach((el) => el.classList.add('leaving'));
+  return new Promise((r) => setTimeout(r, 200));
+}
+
+async function dropCards(ids) {
+  await animateOut(ids);
+  const gone = new Set(ids);
+  state.cards = state.cards.filter((c) => !gone.has(c.id));
+  render();
+}
+
+const goodsText = (n) => `${n} ${plural(n, 'товар', 'товара', 'товаров')}`;
+
+async function deleteSelected() {
+  const ids = [...state.selected];
+  if (!ids.length) return;
+  const n = ids.length;
+  const ok = await confirmDialog({
+    title: n === 1 ? 'Удалить товар?' : `Удалить ${goodsText(n)}?`,
+    text: `${n === 1 ? 'Товар и лайки к нему удалятся' : 'Товары и лайки к ним удалятся'} из подборки. Это нельзя отменить.`,
+    ok: 'Удалить',
+    danger: true,
+  });
+  if (!ok || !state.selecting) return;
+  const board = state.board;
+  try {
+    await api('/api/cards/delete', { method: 'POST', body: { ids } });
+    if (state.board !== board) return;
+    exitSelection();
+    await dropCards(ids);
+    toast(`Удалено: ${goodsText(n)}`);
+    loadBoards();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+function openMove() {
+  const n = state.selected.size;
+  if (!n) return;
+  $('#moveTitle').textContent = `Перенести ${goodsText(n)}`;
+  const form = $('#moveForm');
+  form.boardName.value = '';
+  renderMoveList();
+  showMoveNew(!state.boards.some((b) => b.id !== state.board));
+  openDialog(moveDialog);
+  loadBoards();
+}
+
+function renderMoveList() {
+  const others = state.boards.filter((b) => b.id !== state.board);
+  $('#moveList').innerHTML =
+    others
+      .map((b) => `<li class="board-row" data-board="${esc(b.id)}">
+        <button type="button" class="board-pick" data-action="move-to"><span class="txt"><span class="bn">${esc(b.name)}</span><span class="bm">${boardMeta(b)}</span></span><svg class="go"><use href="#i-right"/></svg></button>
+      </li>`)
+      .join('') +
+    `<li class="board-row new-row" ${$('#moveNew').hidden ? '' : 'hidden'}>
+      <button type="button" class="board-pick" data-action="move-new"><span class="plus"><svg><use href="#i-plus"/></svg></span><span class="txt"><span class="bn">Новая подборка…</span></span></button>
+    </li>`;
+}
+
+function showMoveNew(show) {
+  $('#moveNew').hidden = !show;
+  const row = $('#moveList .new-row');
+  if (row) row.hidden = show;
+  if (show && moveDialog.open) $('#moveForm').boardName.focus();
+}
+
+let moving = false;
+async function moveSelected(target, name) {
+  const ids = [...state.selected];
+  const from = state.board;
+  if (moving || !ids.length || target === from) return;
+  moving = true;
+  try {
+    const r = await api('/api/cards/move', { method: 'POST', body: { ids, board: target } });
+    if (moveDialog.open) moveDialog.close();
+    if (state.board !== from) return;
+    exitSelection();
+    await dropCards(ids);
+    const merged = r.merged?.length || 0;
+    toast(`Перенесено в «${name}»: ${goodsText(ids.length)}${merged ? ` (${merged} уже ${merged === 1 ? 'был' : 'были'} там — лайки объединены)` : ''}`);
+    loadBoards();
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    moving = false;
+  }
+}
+
+async function moveToNewBoard() {
+  const input = $('#moveForm').boardName;
+  const name = input.value.trim();
+  if (!name) return input.focus();
+  if (moving) return;
+  try {
+    const r = await api('/api/boards', { method: 'POST', body: { name } });
+    state.boards.push(r.board);
+    await moveSelected(r.board.id, r.board.name);
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+// Долгое нажатие: карточка медленно «вдавливается», через 450 мс включается выбор.
+// Сдвиг пальца больше чем на 10 px (прокрутка) отменяет нажатие.
+let press = null;
+let pressFired = false;
+let lastPointerType = 'mouse';
+
+function cancelPress() {
+  if (!press) return;
+  clearTimeout(press.timer);
+  clearTimeout(press.holdTimer);
+  press.card.classList.remove('holding');
+  press = null;
+}
+
+function firePress() {
+  const { card, id } = press;
+  cancelPress();
+  pressFired = true;
+  buzz(10);
+  if (state.selecting) toggleSelected(id);
+  else enterSelection(id);
+  card.classList.add('picked');
+  setTimeout(() => card.classList.remove('picked'), 320);
+}
+
+function bindLongPress(grid) {
+  grid.addEventListener('pointerdown', (e) => {
+    cancelPress();
+    if (e.button !== 0 || !e.isPrimary) return;
+    const card = !ddSwallowClick && e.target.closest('.card');
+    // Сердце всегда голосует, даже если его подержать подольше
+    if (!card || (!state.selecting && e.target.closest('[data-vote]'))) return;
+    press = { card, id: card.dataset.id, x: e.clientX, y: e.clientY, pointerId: e.pointerId };
+    press.holdTimer = setTimeout(() => card.classList.add('holding'), 90);
+    press.timer = setTimeout(firePress, LONG_PRESS_MS);
+  });
+  grid.addEventListener('pointermove', (e) => {
+    if (press && e.pointerId === press.pointerId && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) cancelPress();
+  }, { passive: true });
+  for (const type of ['pointerup', 'pointercancel']) window.addEventListener(type, cancelPress, { passive: true });
+  window.addEventListener('scroll', cancelPress, { passive: true });
+  // Без системного меню и перетаскивания картинок на карточках
+  grid.addEventListener('contextmenu', (e) => {
+    const card = e.target.closest('.card');
+    if (!card) return;
+    e.preventDefault();
+    // Правая кнопка мыши на компьютере — то же, что долгое нажатие
+    if (lastPointerType === 'mouse' && !press && !pressFired) {
+      if (state.selecting) toggleSelected(card.dataset.id);
+      else enterSelection(card.dataset.id);
+    }
+  });
+  grid.addEventListener('dragstart', (e) => e.target.closest('.card') && e.preventDefault());
+  // Отпускание после долгого нажатия не должно открывать карточку
+  window.addEventListener('click', (e) => {
+    if (!pressFired) return;
+    pressFired = false;
+    if (e.target.closest?.('#grid')) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }, true);
+}
+
+/* ========================== Отклик на нажатия ========================== */
+
+// Всё нажимаемое чуть «проседает» под пальцем (класс .pressed, стили — в CSS).
+// На касание реагируем с задержкой 50 мс, чтобы прокрутка ленты не дёргала карточки,
+// а быстрый тап всё равно получает заметный отклик не короче 110 мс.
+const PRESSABLE = 'button, a.btn, .share-targets a, .card, [role="button"]';
+
+function bindPressFeedback() {
+  let el = null;
+  let since = 0;
+  let timer = 0;
+  let x = 0;
+  let y = 0;
+  const on = () => {
+    clearTimeout(timer);
+    timer = 0;
+    if (el && !el.classList.contains('pressed')) {
+      el.classList.add('pressed');
+      since = performance.now();
+    }
+  };
+  const off = (flash) => {
+    if (!el) return;
+    const t = el;
+    if (flash && timer) on();
+    el = null;
+    clearTimeout(timer);
+    timer = 0;
+    const left = 110 - (performance.now() - since);
+    if (left > 0 && t.classList.contains('pressed')) setTimeout(() => t.classList.remove('pressed'), left);
+    else t.classList.remove('pressed');
+  };
+  document.addEventListener('pointerdown', (e) => {
+    lastPointerType = e.pointerType;
+    pressFired = false;
+    off(false);
+    if (e.button !== 0) return;
+    const t = !ddSwallowClick && e.target.closest(PRESSABLE);
+    if (!t || t.disabled || t.getAttribute('aria-disabled') === 'true') return;
+    el = t;
+    x = e.clientX;
+    y = e.clientY;
+    if (e.pointerType === 'mouse') on();
+    else timer = setTimeout(on, 50);
+  }, { passive: true });
+  document.addEventListener('pointermove', (e) => {
+    if (el && Math.hypot(e.clientX - x, e.clientY - y) > 10) off(false);
+  }, { passive: true });
+  // Палец подняли раньше задержки — всё равно коротко показываем нажатие
+  document.addEventListener('pointerup', () => off(true), { passive: true });
+  document.addEventListener('pointercancel', () => off(false), { passive: true });
+  // iOS Safari включает :active только при наличии обработчика touchstart
+  document.addEventListener('touchstart', () => {}, { passive: true });
+}
+
+/* =================== Смахивание карточки вниз — закрыть =================== */
+
+// Тянем открытую карточку вниз: она едет за пальцем, фон светлеет. Отпустили дальше 120 px
+// или резко смахнули — карточка уезжает и закрывается, иначе пружинит обратно.
+// Жест начинается, только если содержимое прокручено к началу и движение — вниз, а не вбок.
+function bindViewerSwipe() {
+  let g = null;
+  const scrolled = (el) => {
+    for (; el && el !== viewer; el = el.parentElement) if (el.scrollTop > 0) return true;
+    return false;
+  };
+  const reset = () => {
+    viewer.classList.remove('dragging');
+    viewer.style.removeProperty('transition');
+    viewer.style.removeProperty('translate');
+    viewer.style.removeProperty('opacity');
+    viewer.style.removeProperty('--drag');
+  };
+  viewer.addEventListener('touchstart', (e) => {
+    g = null;
+    if (e.touches.length !== 1 || lightbox.open || viewer.classList.contains('closing')) return;
+    if (e.target.closest('.viewer-top, .dd-menu') || scrolled(e.target)) return;
+    const t = e.touches[0];
+    g = { x0: t.clientX, y0: t.clientY, mode: '', y: 0, v: 0, ly: t.clientY, lt: e.timeStamp };
+  }, { passive: true });
+  viewer.addEventListener('touchmove', (e) => {
+    if (!g) return;
+    const t = e.touches[0];
+    const dx = t.clientX - g.x0;
+    const dy = t.clientY - g.y0;
+    if (!g.mode) {
+      if (e.touches.length !== 1) return (g = null);
+      if (Math.hypot(dx, dy) < 6) return;
+      g.mode = dy > 0 && dy > Math.abs(dx) * 1.2 && e.cancelable ? 'drag' : 'skip';
+      if (g.mode === 'drag') {
+        $$('.dd.open', viewer).forEach((d) => setDd(d, false));
+        viewer.classList.add('dragging');
+        viewer.style.transition = 'none';
+      }
+    }
+    if (g.mode !== 'drag') return;
+    e.preventDefault();
+    g.v = (t.clientY - g.ly) / Math.max(1, e.timeStamp - g.lt);
+    g.ly = t.clientY;
+    g.lt = e.timeStamp;
+    // Лёгкое сопротивление: карточка отстаёт от пальца тем сильнее, чем дальше её тянут
+    const h = viewer.clientHeight || innerHeight;
+    g.y = Math.max(0, dy) * (1 - Math.min(0.35, Math.max(0, dy) / (h * 2)));
+    viewer.style.translate = `0 ${g.y}px`;
+    viewer.style.setProperty('--drag', Math.min(1, g.y / (h * 0.6)).toFixed(3));
+  }, { passive: false });
+  const end = () => {
+    if (g?.mode !== 'drag') return (g = null);
+    const { y, v } = g;
+    g = null;
+    if (y > 120 || (v > 0.5 && y > 24)) {
+      viewer.classList.add('closing');
+      viewer.style.transition = 'translate .22s cubic-bezier(.4, 0, 1, 1), opacity .22s ease-in, --drag .22s linear';
+      viewer.style.translate = '0 100%';
+      viewer.style.opacity = '0.6';
+      viewer.style.setProperty('--drag', '1');
+      setTimeout(() => {
+        closeViewer();
+        viewer.classList.remove('closing');
+        reset();
+      }, 230);
+    } else {
+      viewer.style.transition = 'translate .32s cubic-bezier(.25, 1, .5, 1), --drag .32s ease';
+      viewer.style.translate = '0 0';
+      viewer.style.setProperty('--drag', '0');
+      setTimeout(() => !g && reset(), 340);
+    }
+  };
+  viewer.addEventListener('touchend', end);
+  viewer.addEventListener('touchcancel', end);
+}
+
+/* ========================= Лайтбокс: жесты и зум ========================= */
+
+// Фото листаются трансформами, а не прокруткой: так щипок, двойной тап и перетаскивание
+// увеличенного фото не путаются с перелистыванием и не масштабируют саму страницу.
+const lb = { index: 0, n: 0, s: 1, tx: 0, ty: 0, dx: 0, dy: 0 };
+const LB_MAX = 4;
+const lbTrack = $('#lbTrack');
+const lbImg = (i = lb.index) => lbTrack.children[i]?.querySelector('img');
+
+function lbRender(animate) {
+  const w = lightbox.clientWidth || innerWidth;
+  const h = lightbox.clientHeight || innerHeight;
+  const ease = animate ? '.32s cubic-bezier(.2, .8, .2, 1)' : '0s';
+  lbTrack.style.transition = `transform ${ease}`;
+  lbTrack.style.transform = `translate3d(${-lb.index * w + lb.dx}px, ${lb.dy}px, 0)`;
+  const img = lbImg();
+  if (img) {
+    img.style.transition = `transform ${ease}`;
+    img.style.transform = `translate3d(${lb.tx}px, ${lb.ty}px, 0) scale(${lb.s})`;
+  }
+  lightbox.style.transition = animate ? '--drag .32s ease' : '';
+  lightbox.style.setProperty('--drag', Math.min(1, Math.max(0, lb.dy) / (h * 0.6)).toFixed(3));
+  lightbox.classList.toggle('zoomed', lb.s > 1.01);
+  $('#lbCounter').textContent = lb.n > 1 ? `${lb.index + 1} / ${lb.n}` : '';
+}
+
+// Допустимые сдвиги увеличенного фото: меньше экрана — по центру, больше — без пустых полей
+function lbBounds(s) {
+  const W = lightbox.clientWidth || innerWidth;
+  const H = lightbox.clientHeight || innerHeight;
+  const img = lbImg();
+  const iw = img?.offsetWidth || W;
+  const ih = img?.offsetHeight || H;
+  const bx = (W - iw) / 2;
+  const by = (H - ih) / 2;
+  const range = (size, b, view) => (size * s <= view ? [(size - size * s) / 2, (size - size * s) / 2] : [view - b - size * s, -b]);
+  return { x: range(iw, bx, W), y: range(ih, by, H), bx, by };
+}
+const clampTo = (v, [a, b]) => Math.min(b, Math.max(a, v));
+const rubber = (v, [a, b]) => (v < a ? a - (a - v) * 0.35 : v > b ? b + (v - b) * 0.35 : v);
+
+// Масштаб s вокруг точки экрана (fx, fy): точка фото под пальцами остаётся на месте
+function lbZoomAt(s, fx, fy) {
+  const { bx, by } = lbBounds(lb.s);
+  const k = s / lb.s;
+  lb.tx = fx - bx - k * (fx - bx - lb.tx);
+  lb.ty = fy - by - k * (fy - by - lb.ty);
+  lb.s = s;
+}
+
+function lbSettle(fx, fy) {
+  const W = lightbox.clientWidth || innerWidth;
+  const H = lightbox.clientHeight || innerHeight;
+  if (lb.s <= 1.01) Object.assign(lb, { s: 1, tx: 0, ty: 0 });
+  else if (lb.s > LB_MAX) lbZoomAt(LB_MAX, fx ?? W / 2, fy ?? H / 2);
+  const b = lbBounds(lb.s);
+  lb.tx = clampTo(lb.tx, b.x);
+  lb.ty = clampTo(lb.ty, b.y);
+  lbRender(true);
+}
+
+function lbGo(i) {
+  const old = lbImg();
+  lb.index = Math.max(0, Math.min(lb.n - 1, i));
+  if (old && old !== lbImg()) {
+    old.style.transition = 'transform .32s ease';
+    old.style.transform = '';
+  }
+  Object.assign(lb, { s: 1, tx: 0, ty: 0, dx: 0, dy: 0 });
+  lbRender(true);
+}
+
+function openLightbox(i) {
+  const c = state.cards.find((x) => x.id === state.openId);
+  if (!c?.images?.length) return;
+  lbTrack.innerHTML = c.images
+    .map((u) => `<div class="slide"><img ${photoSource(u)} alt="" draggable="false" referrerpolicy="no-referrer"></div>`)
+    .join('');
+  loadPrivatePhotos(lbTrack);
+  Object.assign(lb, { index: Math.max(0, Math.min(i, c.images.length - 1)), n: c.images.length, s: 1, tx: 0, ty: 0, dx: 0, dy: 0 });
+  lightbox.classList.remove('closing');
+  openDialog(lightbox);
+  nativeBars(true);
+  lbRender(false);
+}
+
+// Приложение для Android рисует сайт под системными панелями: на чёрном лайтбоксе значки панелей
+// должны быть светлыми (dark: true), после закрытия — снова по теме (dark: null)
+function nativeBars(dark) {
+  try {
+    window.MarketsNative?.postMessage(JSON.stringify({ type: 'bars', dark }));
+  } catch {}
+}
+
+function closeLightboxAnimated() {
+  const h = lightbox.clientHeight || innerHeight;
+  lightbox.classList.add('closing');
+  lb.dy = h;
+  lbRender(true);
+  setTimeout(() => lightbox.open && lightbox.close(), 240);
+}
+
+function bindLightbox() {
+  const ptrs = new Map();
+  let g = null;
+  let moved = false;
+  let tap = null;
+  const pts = () => [...ptrs.values()];
+  const begin = () => {
+    const p = pts();
+    if (p.length >= 2) {
+      const [a, b] = p;
+      g = { type: 'pinch', d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, s0: lb.s, tx0: lb.tx, ty0: lb.ty, m0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+      moved = true;
+    } else if (p.length === 1) {
+      const [a] = p;
+      g = { type: lb.s > 1.01 ? 'pan' : 'pending', x0: a.x, y0: a.y, tx0: lb.tx, ty0: lb.ty, t0: performance.now(), vx: 0, vy: 0, lx: a.x, ly: a.y, lt: performance.now() };
+    } else g = null;
+  };
+  lightbox.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('.lb-close') || lightbox.classList.contains('closing')) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (!ptrs.size) moved = false;
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    begin();
+  });
+  lightbox.addEventListener('pointermove', (e) => {
+    const p = ptrs.get(e.pointerId);
+    if (!p || !g) return;
+    p.x = e.clientX;
+    p.y = e.clientY;
+    if (g.type === 'pinch') {
+      const [a, b] = pts();
+      if (!b) return;
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      let s = (g.s0 * d) / g.d0;
+      s = s < 1 ? Math.max(0.6, 1 - (1 - s) * 0.5) : s > LB_MAX ? LB_MAX + (s - LB_MAX) * 0.3 : s;
+      const { bx, by } = lbBounds(lb.s);
+      lb.tx = m.x - bx - (s / g.s0) * (g.m0.x - bx - g.tx0);
+      lb.ty = m.y - by - (s / g.s0) * (g.m0.y - by - g.ty0);
+      lb.s = s;
+      g.mid = m;
+      return lbRender(false);
+    }
+    const dx = p.x - g.x0;
+    const dy = p.y - g.y0;
+    const now = performance.now();
+    g.vx = (p.x - g.lx) / Math.max(1, now - g.lt);
+    g.vy = (p.y - g.ly) / Math.max(1, now - g.lt);
+    g.lx = p.x;
+    g.ly = p.y;
+    g.lt = now;
+    if (Math.hypot(dx, dy) > 8) moved = true;
+    if (g.type === 'pending') {
+      if (Math.hypot(dx, dy) < 8) return;
+      g.type = Math.abs(dx) > Math.abs(dy) ? 'swipe' : dy > 0 ? 'down' : 'none';
+    }
+    if (g.type === 'pan') {
+      const b = lbBounds(lb.s);
+      lb.tx = rubber(g.tx0 + dx, b.x);
+      lb.ty = rubber(g.ty0 + dy, b.y);
+    } else if (g.type === 'swipe') {
+      const edge = (lb.index === 0 && dx > 0) || (lb.index === lb.n - 1 && dx < 0);
+      lb.dx = edge ? dx / 3 : dx;
+    } else if (g.type === 'down') {
+      lb.dy = Math.max(0, dy);
+    } else return;
+    lbRender(false);
+  });
+  const up = (e) => {
+    if (!ptrs.has(e.pointerId)) return;
+    const p = ptrs.get(e.pointerId);
+    ptrs.delete(e.pointerId);
+    const ended = g;
+    if (ended?.type === 'pinch') {
+      // Отпустили один палец из двух — продолжаем как перетаскивание, но сначала вписываем масштаб
+      if (lb.s < 1 || lb.s > LB_MAX) lbSettle(ended.mid?.x, ended.mid?.y);
+      if (!ptrs.size) lbSettle(ended.mid?.x, ended.mid?.y);
+      return begin();
+    }
+    if (ptrs.size) return begin();
+    g = null;
+    if (!ended) return;
+    const W = lightbox.clientWidth || innerWidth;
+    if (ended.type === 'swipe') {
+      let i = lb.index;
+      if (lb.dx < -W * 0.18 || ended.vx < -0.4) i++;
+      else if (lb.dx > W * 0.18 || ended.vx > 0.4) i--;
+      lb.dx = 0;
+      return lbGo(i);
+    }
+    if (ended.type === 'down') {
+      if (lb.dy > 120 || (ended.vy > 0.5 && lb.dy > 24)) return closeLightboxAnimated();
+      lb.dy = 0;
+      return lbRender(true);
+    }
+    if (ended.type === 'pan') lbSettle();
+    // Двойной тап: увеличить в точке касания в 2,5 раза или вернуть как было
+    if (!moved && e.type === 'pointerup' && performance.now() - ended.t0 < 300) {
+      const now = performance.now();
+      if (tap && now - tap.t < 320 && Math.hypot(p.x - tap.x, p.y - tap.y) < 30) {
+        tap = null;
+        moved = true; // второй тап не должен закрыть лайтбокс кликом по фону
+        if (lb.s > 1.01) Object.assign(lb, { s: 1, tx: 0, ty: 0 });
+        else lbZoomAt(2.5, p.x, p.y);
+        return lbSettle(p.x, p.y);
+      }
+      tap = { x: p.x, y: p.y, t: now };
+    }
+  };
+  lightbox.addEventListener('pointerup', up);
+  lightbox.addEventListener('pointercancel', up);
+  // Колесо мыши и щипок на тачпаде (ctrl + колесо) — зум вокруг курсора
+  lightbox.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const s = Math.min(LB_MAX, Math.max(1, lb.s * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0025))));
+    lbZoomAt(s, e.clientX, e.clientY);
+    if (s <= 1) Object.assign(lb, { tx: 0, ty: 0 });
+    const b = lbBounds(lb.s);
+    lb.tx = clampTo(lb.tx, b.x);
+    lb.ty = clampTo(lb.ty, b.y);
+    lbRender(false);
+  }, { passive: false });
+  // Тап по чёрному полю закрывает, если это был именно тап, а не жест
+  lightbox.addEventListener('click', (e) => {
+    if (moved) return (moved = false);
+    if (e.target === lightbox || e.target.classList.contains('slide')) lightbox.close();
+  });
+  lightbox.addEventListener('close', () => {
+    nativeBars(null);
+    ptrs.clear();
+    g = null;
+    lightbox.classList.remove('closing', 'zoomed');
+    lightbox.style.removeProperty('--drag');
+  });
+  window.addEventListener('resize', () => {
+    if (!lightbox.open) return;
+    Object.assign(lb, { s: 1, tx: 0, ty: 0, dx: 0, dy: 0 });
+    lbRender(false);
+  });
+}
+
+/* ============================== Подсказки ============================== */
+
+// Свои подсказки вместо системных title: на компьютере — при наведении (через 400 мс) и фокусе
+// с клавиатуры, на телефоне — при долгом нажатии на кнопку-иконку (кроме карточек: там выбор).
+// title переносим в data-tip, чтобы не было двух подсказок сразу; aria-label остаётся для чтения с экрана.
+const tipEl = Object.assign(document.createElement('div'), { className: 'tip', id: 'tip' });
+tipEl.setAttribute('role', 'tooltip');
+const tipPopover = typeof tipEl.showPopover === 'function';
+if (tipPopover) tipEl.popover = 'manual';
+const TIP_TARGET = '[data-tip], .icon-btn[aria-label], .tab[aria-label], .fab[aria-label]';
+let tipFor = null;
+let tipTimer = 0;
+let tipHideTimer = 0;
+let tipWarmUntil = 0;
+let tipFired = false;
+
+const tipText = (el) => el.dataset.tip || el.getAttribute('aria-label') || '';
+
+function adoptTitles(root) {
+  if (root.nodeType !== 1) return;
+  const list = root.hasAttribute('title') ? [root] : [];
+  for (const el of [...list, ...root.querySelectorAll('[title]')]) {
+    if (el.tagName === 'IFRAME' || el instanceof SVGElement) continue;
+    el.dataset.tip = el.getAttribute('title');
+    el.removeAttribute('title');
+  }
+}
+
+function tipTarget(node, touch) {
+  const el = node?.closest?.(TIP_TARGET);
+  if (!el || !tipText(el) || el.disabled) return null;
+  // На телефоне долгое нажатие на карточке — это режим выбора; подсказки только у сердец
+  if (touch && el.closest('.card') && !el.matches('.vote')) return null;
+  return el;
+}
+
+function placeTip(el) {
+  const r = el.getBoundingClientRect();
+  const w = tipEl.offsetWidth;
+  const h = tipEl.offsetHeight;
+  const vw = document.documentElement.clientWidth;
+  const below = r.top - h - 10 < 8;
+  const left = Math.min(vw - w - 8, Math.max(8, r.left + r.width / 2 - w / 2));
+  tipEl.style.left = `${left}px`;
+  tipEl.style.top = `${below ? r.bottom + 10 : r.top - h - 10}px`;
+  tipEl.classList.toggle('below', below);
+  tipEl.style.setProperty('--arrow-x', `${Math.min(w - 12, Math.max(12, r.left + r.width / 2 - left))}px`);
+}
+
+function showTip(el) {
+  clearTimeout(tipTimer);
+  if (!el.isConnected) return;
+  tipFor = el;
+  tipEl.textContent = tipText(el);
+  if (tipPopover) {
+    if (!tipEl.isConnected) document.body.append(tipEl);
+    // Каждый показ поднимает подсказку наверх — над окнами, открытыми позже
+    try {
+      if (tipEl.matches(':popover-open')) tipEl.hidePopover();
+      tipEl.showPopover();
+    } catch {}
+  } else (el.closest('dialog') || document.body).append(tipEl);
+  placeTip(el);
+  requestAnimationFrame(() => tipFor === el && tipEl.classList.add('show'));
+}
+
+function hideTip() {
+  clearTimeout(tipTimer);
+  clearTimeout(tipHideTimer);
+  if (tipFor) tipWarmUntil = performance.now() + 300;
+  tipFor = null;
+  tipEl.classList.remove('show');
+}
+
+function bindTooltips() {
+  adoptTitles(document.body);
+  new MutationObserver((list) => {
+    for (const m of list) {
+      if (m.type === 'attributes') m.target.hasAttribute('title') && adoptTitles(m.target);
+      else m.addedNodes.forEach(adoptTitles);
+    }
+  }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['title'] });
+
+  let start = null;
+  document.addEventListener('pointerover', (e) => {
+    if (e.pointerType !== 'mouse') return;
+    const el = tipTarget(e.target);
+    if (el === tipFor) return;
+    hideTip();
+    if (!el) return;
+    // Если подсказка только что была у соседней кнопки — показываем сразу
+    if (performance.now() < tipWarmUntil) showTip(el);
+    else tipTimer = setTimeout(() => showTip(el), 400);
+  });
+  document.addEventListener('pointerout', (e) => {
+    if (e.pointerType !== 'mouse' || !tipFor) return;
+    if (!tipFor.contains(e.relatedTarget)) hideTip();
+  });
+  document.addEventListener('focusin', (e) => {
+    const el = tipTarget(e.target);
+    if (el && el === e.target && el.matches(':focus-visible')) showTip(el);
+  });
+  document.addEventListener('focusout', () => tipFor && hideTip());
+  document.addEventListener('pointerdown', (e) => {
+    tipFired = false;
+    hideTip();
+    if (e.pointerType === 'mouse') return;
+    const el = tipTarget(e.target, true);
+    if (!el) return;
+    start = { x: e.clientX, y: e.clientY };
+    tipTimer = setTimeout(() => {
+      tipFired = true;
+      buzz(8);
+      showTip(el);
+      tipHideTimer = setTimeout(hideTip, 1500);
+    }, 500);
+  }, { passive: true });
+  document.addEventListener('pointermove', (e) => {
+    if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) (clearTimeout(tipTimer), (start = null));
+  }, { passive: true });
+  const release = () => {
+    start = null;
+    clearTimeout(tipTimer);
+    if (tipFired && tipFor) {
+      clearTimeout(tipHideTimer);
+      tipHideTimer = setTimeout(hideTip, 700);
+    }
+  };
+  document.addEventListener('pointerup', release, { passive: true });
+  document.addEventListener('pointercancel', release, { passive: true });
+  // Долгое нажатие ради подсказки не нажимает саму кнопку и не вызывает системное меню
+  document.addEventListener('click', (e) => {
+    if (!tipFired) return;
+    tipFired = false;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
+  document.addEventListener('contextmenu', (e) => {
+    if (lastPointerType !== 'mouse' && tipTarget(e.target, true)) e.preventDefault();
+  });
+  document.addEventListener('scroll', hideTip, { capture: true, passive: true });
+  document.addEventListener('keydown', (e) => e.key === 'Escape' && tipFor && hideTip());
+  window.addEventListener('resize', hideTip);
+}
+
 /* ================================ Тост ================================ */
 
 let toastTimer;
 function toast(msg) {
   const t = $('#toast');
   t.textContent = msg;
+  // Поверх открытых окон (верхний слой браузера), иначе тост в карточке не виден
+  if (typeof t.showPopover === 'function') {
+    try {
+      if (!t.popover) t.popover = 'manual';
+      if (t.matches(':popover-open')) t.hidePopover();
+      t.showPopover();
+      void t.offsetWidth; // чтобы появление анимировалось и при самом первом показе
+    } catch {}
+  }
   t.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
@@ -1400,6 +2369,9 @@ function toast(msg) {
 
 function bind() {
   document.addEventListener('click', async (e) => {
+    // В режиме выбора касание карточки (и её сердец) только отмечает её
+    const picked = state.selecting && e.target.closest('#grid .card');
+    if (picked) return toggleSelected(picked.dataset.id);
     const vote = e.target.closest('[data-vote]');
     if (vote) {
       e.stopPropagation();
@@ -1428,7 +2400,7 @@ function bind() {
     if (!actEl && card) return openViewer(card.dataset.id);
     if (!actEl) return;
     const c = state.cards.find((x) => x.id === state.openId);
-    if (actEl.dataset.action !== 'toggle-more') actEl.closest('.dd.more')?.classList.remove('open');
+    if (actEl.dataset.action !== 'toggle-more') setDd(actEl.closest('.dd.more'), false);
     switch (actEl.dataset.action) {
       case 'add':
         return openAdd();
@@ -1473,7 +2445,7 @@ function bind() {
       case 'reload':
         return state.unlocked ? loadCards() : enterApp();
       case 'toggle-more':
-        return actEl.closest('.dd').classList.toggle('open');
+        return setDd(actEl.closest('.dd'), !actEl.closest('.dd').classList.contains('open'));
       case 'close-viewer':
         return closeViewer();
       case 'prev':
@@ -1503,6 +2475,22 @@ function bind() {
         return testApi($('#settingsForm').apiUrl.value);
       case 'copy-share':
         return copy($('#shareUrl').value);
+      case 'toggle-password':
+        return togglePassword(actEl);
+      case 'select-cancel':
+        return exitSelection();
+      case 'select-all':
+        return selectAll();
+      case 'select-move':
+        return openMove();
+      case 'select-delete':
+        return deleteSelected();
+      case 'move-to': {
+        const id = actEl.closest('[data-board]').dataset.board;
+        return moveSelected(id, state.boards.find((b) => b.id === id)?.name || id);
+      }
+      case 'move-new':
+        return showMoveNew(true);
     }
   });
 
@@ -1510,7 +2498,17 @@ function bind() {
     const card = e.target.closest?.('.card');
     if (card && (e.key === 'Enter' || e.key === ' ') && e.target === card) {
       e.preventDefault();
-      openViewer(card.dataset.id);
+      if (state.selecting) toggleSelected(card.dataset.id);
+      else openViewer(card.dataset.id);
+    }
+    // Escape вне окон: сначала закрывает меню, потом выходит из режима выбора
+    if (e.key === 'Escape' && !document.querySelector('dialog[open]') && layers.length) {
+      e.preventDefault();
+      mpHandleBack();
+    }
+    if (lightbox.open && !lightbox.classList.contains('closing')) {
+      if (e.key === 'ArrowLeft') lbGo(lb.index - 1);
+      if (e.key === 'ArrowRight') lbGo(lb.index + 1);
     }
     if (viewer.open && !lightbox.open) {
       if (e.key === 'ArrowLeft') goSlide(currentSlide() - 1);
@@ -1536,15 +2534,30 @@ function bind() {
 
   // Без выбора роли закрыть окно нельзя
   roleDialog.addEventListener('cancel', (e) => !state.role && e.preventDefault());
+  // Браузер может закрыть окно и без нашего согласия (Escape или жест «Назад» до первого касания) —
+  // окно входа и выбор роли тогда сразу открываются снова
+  roleDialog.addEventListener('close', () => !state.role && setTimeout(() => !state.role && !accessDialog.open && askRole(), 0));
+  accessDialog.addEventListener('keydown', (e) => e.key === 'Escape' && e.preventDefault());
+  roleDialog.addEventListener('keydown', (e) => e.key === 'Escape' && !state.role && e.preventDefault());
+  accessDialog.addEventListener('close', () => setTimeout(() => {
+    if (!state.unlocked && state.api && !accessDialog.open) openDialog(accessDialog);
+  }, 0));
 
   viewer.addEventListener('close', () => {
     state.openId = null;
     if (location.hash.startsWith('#card=')) history.replaceState(null, '', location.pathname + location.search);
   });
   viewer.addEventListener('click', (e) => e.target === viewer && closeViewer());
-  lightbox.addEventListener('click', (e) => (e.target === lightbox || e.target.classList.contains('slide')) && lightbox.close());
-  for (const d of [addDialog, editDialog, settingsDialog, $('#shareDialog'), $('#boardsDialog')])
+  for (const d of [addDialog, editDialog, settingsDialog, $('#shareDialog'), $('#boardsDialog'), moveDialog, confirmBox])
     d.addEventListener('click', (e) => e.target === d && d.close());
+  // Окно закрылось чем угодно (✕, Escape, тап мимо, отправка формы) — убираем его слой из истории «Назад»
+  for (const d of $$('dialog')) d.addEventListener('close', () => popLayer(d));
+  confirmBox.addEventListener('close', onConfirmClose);
+  moveDialog.addEventListener('close', () => showMoveNew(false));
+  $('#moveForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    moveToNewBoard();
+  });
 
   addText.addEventListener('input', updateParseInfo);
   photoInput.addEventListener('change', uploadPhoto);
@@ -1582,6 +2595,11 @@ function bind() {
   });
 
   filterMenu($('#filterDd'));
+  bindPressFeedback();
+  bindLongPress($('#grid'));
+  bindViewerSwipe();
+  bindLightbox();
+  bindTooltips();
 
   // Фоновое обновление голосов от других людей
   setInterval(() => {
