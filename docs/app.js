@@ -226,10 +226,22 @@ function readCache(board = state.board) {
   }
 }
 
+// Свои голоса последних секунд: ответ сервера, запрошенный ещё до нажатия (например, загрузка при старте,
+// пока карточки уже видны из кеша), не должен откатывать только что поставленное сердце
+const recentVotes = new Map(); // id → { kind, value, at }
+const RECENT_VOTE_MS = 10000;
+
+function keepRecentVote(c) {
+  const v = recentVotes.get(c.id);
+  if (!v) return c;
+  if (Date.now() - v.at > RECENT_VOTE_MS) return recentVotes.delete(c.id), c;
+  return c.likes?.[v.kind] === v.value ? c : { ...c, likes: { ...c.likes, [v.kind]: v.value } };
+}
+
 function applyCards(cards, etag) {
   // не перетираем голос, который пользователь только что нажал
   const pending = new Map(state.cards.filter((c) => c._pending).map((c) => [c.id, c]));
-  state.cards = cards.map((c) => pending.get(c.id) || withUploadedPhoto(c));
+  state.cards = cards.map((c) => pending.get(c.id) || keepRecentVote(withUploadedPhoto(c)));
   state.etag = etag || '';
   state.error = '';
   if (state.booting) (state.booting = false), store.set('booted', '1');
@@ -580,6 +592,8 @@ function cardHtml(c) {
 const cardSig = new Map();
 
 function render() {
+  // Палец держит карточку — перерисуем, когда отпустит (иначе узел карточки может смениться посреди нажатия)
+  if (press) return void (renderDeferred = true);
   pruneSelection();
   renderGrid();
   syncSelection();
@@ -600,7 +614,7 @@ function renderGrid() {
       <h2>Подключите сервер</h2>
       <p>Карточки и голоса хранятся на вашем бесплатном Cloudflare Worker.</p>
       <div class="row"><a class="btn primary" href="${deployUrl()}" target="_blank" rel="noopener">Создать сервер</a>
-      <button class="btn" data-action="settings">Ввести адрес</button></div>`;
+      <button class="btn" data-action="server">Ввести адрес</button></div>`;
     return;
   }
   // Заготовки — только когда показать действительно нечего (кэш пуст, подборка ещё грузится)
@@ -625,7 +639,7 @@ function renderGrid() {
     empty.hidden = false;
     if (state.error) {
       empty.innerHTML = `<h2>Сервер не отвечает</h2><p>${esc(state.error)}</p>
-        <div class="row"><button class="btn primary" data-action="reload">Повторить</button><button class="btn" data-action="settings">Настройки</button></div>`;
+        <div class="row"><button class="btn primary" data-action="reload">Повторить</button><button class="btn" data-action="server">Сервер</button></div>`;
     } else if (!state.cards.length) {
       empty.innerHTML = `<div class="logo"><svg><use href="#i-heart"/></svg></div><h2>Пока пусто</h2>
         <p>Вставьте ссылки с Ozon, Wildberries, Маркета или AliExpress.</p>
@@ -653,11 +667,21 @@ function renderGrid() {
       const tmp = document.createElement('div');
       tmp.innerHTML = cardHtml(c);
       const fresh = tmp.firstElementChild;
+      const photoKey = JSON.stringify([c.source, c.thumbs?.[0] || c.images?.[0] || '', c.images?.length || 0]);
       if (el) {
-        fresh.style.animation = 'none';
-        el.replaceWith(fresh);
+        // Карточка уже на экране — обновляем содержимое на месте: сам узел, его классы (выбор, нажатие)
+        // и идущие переходы сохраняются, а фото перерисовывается, только если оно и правда сменилось
+        if (el.dataset.photoKey !== photoKey) el.querySelector('.photo').replaceWith(fresh.querySelector('.photo'));
+        el.querySelector('.body').replaceWith(fresh.querySelector('.body'));
+      } else {
+        // Появление анимируем только у новых карточек и один раз: класс снимается по окончании,
+        // поэтому смена других классов (выбор, нажатие) анимацию не перезапускает
+        el = fresh;
+        el.classList.add('enter');
+        const done = (e) => e.target === el && (el.classList.remove('enter'), el.removeEventListener('animationend', done));
+        el.addEventListener('animationend', done);
       }
-      el = fresh;
+      el.dataset.photoKey = photoKey;
       cardSig.set(c.id, sig);
     }
     const want = prev ? prev.nextElementSibling : grid.firstElementChild;
@@ -667,43 +691,82 @@ function renderGrid() {
   loadPrivatePhotos(grid);
 }
 
-// Островок над таб-баром: сколько товаров на экране и на какую сумму
-function updateSum() {
-  const bar = $('#sumbar');
-  // В режиме выбора островок считает только выбранные товары
+// Островок над таб-баром: сколько товаров на экране и на какую сумму. Нажатие открывает меню
+// обновления (вверх от островка). Содержимое правится на месте, а не пересоздаётся: островок не
+// «прыгает», значок обновления крутится без рывков, а появляется (анимация) только из скрытого состояния.
+const sumDd = $('#sumDd');
+const sumBar = $('#sumbar');
+
+function sumList() {
   const shown = state.api && !(state.loading && !state.cards.length) ? visibleCards() : [];
-  const list = state.selecting ? shown.filter((c) => state.selected.has(c.id)) : shown;
+  return state.selecting ? shown.filter((c) => state.selected.has(c.id)) : shown;
+}
+
+function updateSum() {
+  // В режиме выбора островок считает только выбранные товары
+  const list = sumList();
   if (!list.length) {
-    bar.hidden = true;
+    sumDd.hidden = true;
+    setDd(sumDd, false);
     return;
   }
   const priced = list.filter((c) => c.price != null);
   const total = priced.reduce((a, c) => a + c.price, 0);
   const n = list.length;
-  const what = `${n} ${plural(n, 'товар', 'товара', 'товаров')}`;
-  const incomplete = list.filter(isIncomplete).length;
+  const incomplete = state.selecting ? 0 : list.filter(isIncomplete).length;
   const bulk = state.bulkRefresh;
-  const refresh = state.selecting ? '' : bulk
-    ? `<button type="button" class="sum-refresh busy" data-action="stop-refresh" title="Остановить обновление"><svg><use href="#i-refresh"/></svg><span>${bulk.done} из ${bulk.total}</span></button>`
-    : incomplete
-      ? `<button type="button" class="sum-refresh" data-action="refresh-incomplete" title="Обновить цену и фото у товаров без данных"><svg><use href="#i-refresh"/></svg><span>Обновить ${incomplete}</span></button>`
-      : '';
-  bar.innerHTML = `${state.filter === 'both' ? '<svg class="duo"><use href="#i-duo"/></svg>' : '<svg><use href="#i-bag"/></svg>'}<span class="cnt">${what}</span>${priced.length ? `<i class="sep"></i><b>${rub(total)}</b>` : ''}${refresh}`;
-  bar.hidden = false;
+  // Каркас пересобираем, только когда меняется его вид; цифры — обычной заменой текста
+  const shape = [state.filter === 'both', priced.length > 0, bulk ? 'busy' : incomplete ? 'todo' : ''].join();
+  if (sumBar.dataset.shape !== shape) {
+    sumBar.dataset.shape = shape;
+    sumBar.innerHTML = `${state.filter === 'both' ? '<svg class="duo"><use href="#i-duo"/></svg>' : '<svg><use href="#i-bag"/></svg>'}<span class="cnt"></span>${
+      priced.length ? '<i class="sep"></i><b class="sum"></b>' : ''}${
+      bulk ? '<span class="sum-chip busy"><svg><use href="#i-refresh"/></svg><span class="v"></span></span>'
+        : incomplete ? '<span class="sum-chip"><svg><use href="#i-refresh"/></svg><span class="v"></span></span>' : ''}`;
+  }
+  $('.cnt', sumBar).textContent = `${n} ${plural(n, 'товар', 'товара', 'товаров')}`;
+  const sum = $('.sum', sumBar);
+  if (sum) sum.textContent = rub(total);
+  const chip = $('.sum-chip .v', sumBar);
+  if (chip) chip.textContent = bulk ? `${bulk.done} из ${bulk.total}` : String(incomplete);
+  sumBar.setAttribute('aria-label', `${$('.cnt', sumBar).textContent}${priced.length ? ', ' + rub(total) : ''}. ${
+    bulk ? `Обновление: ${bulk.done} из ${bulk.total}` : 'Меню обновления'}`);
+  sumDd.hidden = false;
+  if (sumDd.classList.contains('open')) renderSumMenu();
+}
+
+function renderSumMenu() {
+  const visible = visibleCards();
+  const sel = state.selecting ? visible.filter((c) => state.selected.has(c.id)) : [];
+  const incomplete = state.selecting ? 0 : visible.filter(isIncomplete).length;
+  const bulk = state.bulkRefresh;
+  const item = (action, icon, label, cls = '') =>
+    `<button type="button" class="dd-opt ${cls}" role="menuitem" data-action="${action}"><span class="ic"><svg><use href="#${icon}"/></svg></span><span class="lbl">${label}</span></button>`;
+  $('#sumMenu').innerHTML = bulk
+    ? `<div class="dd-group">Обновляю ${bulk.done} из ${bulk.total}</div>${item('stop-refresh', 'i-close', 'Остановить')}`
+    : state.selecting
+      ? item('refresh-selected', 'i-refresh', `Обновить выбранные (${sel.length})`)
+      : `${item('refresh-all', 'i-refresh', `Обновить всё (${visible.length})`)}${
+          incomplete ? item('refresh-incomplete', 'i-history', `Обновить без данных (${incomplete})`) : ''}
+        <div class="dd-sep"></div>${item('select-start', 'i-select-all', 'Выбрать')}`;
+}
+
+function toggleSumMenu() {
+  const open = !sumDd.classList.contains('open');
+  if (open) renderSumMenu();
+  setDd(sumDd, open);
 }
 
 // Товар без цены или без фото — его стоит перечитать
 const isIncomplete = (c) => c.price == null || !c.images?.length;
 
-// «Обновить N»: по очереди перечитывает все товары на экране, у которых нет цены или фото.
-// В приложении для Android Ozon, Маркет и AliExpress читаются с телефона, остальное — сервером.
-async function refreshIncomplete() {
-  if (state.bulkRefresh) return;
+// Перечитывает товары по очереди. В приложении для Android (и с расширением) Ozon, Маркет
+// и AliExpress читаются с телефона, остальное — сервером. onlyMissing — подсчёт «дополнено» для товаров без данных.
+async function refreshCards(ids, { onlyMissing = false } = {}) {
+  if (state.bulkRefresh || !ids.length) return;
   const board = state.board;
-  const ids = visibleCards().filter(isIncomplete).map((c) => c.id);
-  if (!ids.length) return;
   const run = (state.bulkRefresh = { done: 0, total: ids.length, stop: false });
-  let fixed = 0;
+  let good = 0;
   updateSum();
   for (const id of ids) {
     if (run.stop || state.board !== board || !state.unlocked) break;
@@ -715,7 +778,7 @@ async function refreshIncomplete() {
         const r = viaPhone?.card ? viaPhone : await api(`/api/cards/${id}/refresh`, { method: 'POST', body: {} });
         if (state.board === board) {
           upsertCard(r.card);
-          if (!isIncomplete(withUploadedPhoto(r.card))) fixed++;
+          if (!onlyMissing || !isIncomplete(withUploadedPhoto(r.card))) good++;
         }
       } catch {}
       // Пауза между страницами магазина, чтобы он не принял нас за бота
@@ -726,8 +789,12 @@ async function refreshIncomplete() {
   }
   state.bulkRefresh = null;
   render();
-  toast(fixed ? `Дополнено ${fixed} из ${run.done}` : 'Новых данных не нашлось');
+  if (onlyMissing) toast(good ? `Дополнено ${good} из ${run.done}` : 'Новых данных не нашлось');
+  else toast(run.stop ? `Остановлено: обновлено ${good} из ${run.total}` : `Обновлено ${good} из ${run.done}`);
 }
+
+// «Обновить без данных»: только товары на экране без цены или фото
+const refreshIncomplete = () => refreshCards(visibleCards().filter(isIncomplete).map((c) => c.id), { onlyMissing: true });
 
 function setFilter(f) {
   state.filter = f;
@@ -818,6 +885,7 @@ async function toggleVote(id, kind, btn) {
   try {
     const r = await api(`/api/cards/${id}/vote`, { method: 'POST', body: { kind, value: on } });
     c.likes = r.likes;
+    recentVotes.set(id, { kind, value: !!r.likes?.[kind], at: Date.now() });
   } catch (e) {
     c.likes = prev;
     toast('Голос не сохранился: ' + e.message);
@@ -841,7 +909,7 @@ const addText = $('#addForm textarea');
 const verificationSources = new Set(Object.keys(SOURCES));
 
 function openAdd(prefill) {
-  if (!state.api) return openSettings();
+  if (!state.api) return openServer();
   if (prefill != null) addText.value = prefill;
   $('#progress').hidden = true;
   $('#progress').innerHTML = '';
@@ -1098,10 +1166,12 @@ function refreshViewer(full = false) {
     $('.votes', body).outerHTML = votesHtml(c);
     return;
   }
-  const keepIndex = body.dataset.id === c.id ? currentSlide() : 0;
+  const sameCard = body.dataset.id === c.id;
+  const keepIndex = sameCard ? currentSlide() : 0;
   body.dataset.sig = sig;
   body.dataset.id = c.id;
   const imgs = c.images || [];
+  const gsig = JSON.stringify([imgs, c.thumbs || null]);
   const missing = [!imgs.length && 'фото', c.price == null && 'цены'].filter(Boolean).join(' и ');
   const src = SOURCES[c.source];
   // Кнопки «⋯» и «✕» живут вне прокручиваемого содержимого и всегда остаются на месте
@@ -1120,7 +1190,7 @@ function refreshViewer(full = false) {
           </div>
         </div>
         <button type="button" class="icon-btn float-btn" data-action="close-viewer" aria-label="Закрыть" title="Закрыть"><svg><use href="#i-close"/></svg></button>`;
-  body.innerHTML = `
+  const gallery = `
     <div class="gallery">
       <div class="stage">
       <div class="track" id="track">${
@@ -1135,7 +1205,8 @@ function refreshViewer(full = false) {
       ${imgs.length > 1 ? `<div class="thumbs" id="thumbs">${(c.thumbs?.length === imgs.length ? c.thumbs : imgs)
         .map((u, i) => `<button data-thumb="${i}" class="${i ? '' : 'active'}" aria-label="Фото ${i + 1}"><img ${photoSource(u)} alt="" loading="lazy" referrerpolicy="no-referrer"></button>`)
         .join('')}</div>` : ''}
-    </div>
+    </div>`;
+  const info = `
     <div class="info">
       ${priceHtml(c)}
       ${c.source === 'ozon' && c.priceNoCard > (c.price || 0) ? `<div class="price-alt">без Ozon Банка ${rub(c.priceNoCard)}</div>` : ''}
@@ -1155,6 +1226,13 @@ function refreshViewer(full = false) {
       ${detailsHtml(c)}
       <div class="updated">${c.priceNote ? `Цена ${esc(c.priceNote)} · ` : ''}обновлено ${ago(c.updatedAt)}</div>
     </div>`;
+  // Фото те же — меняем только описание: галерея не перерисовывается, фото не мигают и не грузятся заново
+  if (sameCard && body.dataset.gsig === gsig && $('.gallery', body) && $('.info', body)) {
+    $('.info', body).outerHTML = info;
+    return;
+  }
+  body.dataset.gsig = gsig;
+  body.innerHTML = gallery + info;
   loadPrivatePhotos(body);
   const track = $('#track');
   track.addEventListener('scroll', onTrackScroll, { passive: true });
@@ -1220,10 +1298,9 @@ async function deleteCard(id) {
   if (!ok) return;
   try {
     await api(`/api/cards/${id}`, { method: 'DELETE' });
-    state.cards = state.cards.filter((x) => x.id !== id);
     closeViewer();
-    render();
     toast('Удалено');
+    await dropCards([id]);
   } catch (e) {
     toast(e.message);
   }
@@ -1339,18 +1416,38 @@ function askRole() {
   openDialog(roleDialog);
 }
 
+// Настройки: только роль, тема, шрифт и строка «Сервер»; всё про сервер — в отдельном окне
 function openSettings() {
-  const f = $('#settingsForm');
   $$('#roleSwitch [data-role]').forEach((b) => b.classList.toggle('active', b.dataset.role === state.role));
   markTheme();
   markFont();
   previewFonts();
+  markServer();
+  openDialog(settingsDialog);
+}
+
+// Подсказка в строке «Сервер»: имя хоста и точка состояния (без лишних запросов — по тому, что уже известно)
+function markServer() {
+  const hint = $('#serverHint');
+  let host = '';
+  try {
+    host = state.api ? new URL(state.api).host : '';
+  } catch {}
+  const status = !state.api ? 'none' : state.error ? 'err' : state.unlocked ? 'ok' : 'wait';
+  hint.dataset.status = status;
+  $('.v', hint).textContent = { none: 'не настроен', err: 'нет связи', ok: host || 'подключён', wait: host || 'подключение…' }[status];
+  hint.title = { none: 'Сервер не настроен', err: 'Сервер не отвечает', ok: 'Подключён', wait: 'Подключение' }[status];
+}
+
+const serverDialog = $('#serverDialog');
+function openServer() {
+  const f = $('#serverForm');
   f.apiUrl.value = state.api;
   $('#deployLink').href = deployUrl();
   setSetupOpen(!state.api);
   $('#apiStatus').textContent = '';
   $('#apiStatus').className = 'api-status';
-  openDialog(settingsDialog);
+  openDialog(serverDialog);
 }
 
 function setAccordionOpen(box, open) {
@@ -1377,11 +1474,12 @@ async function testApi(url) {
 }
 
 function saveSettings() {
-  const f = $('#settingsForm');
+  const f = $('#serverForm');
   const api = normalizeApi(f.apiUrl.value);
   const changed = api !== state.api;
   state.api = api;
   store.set('api_override', api === normalizeApi(CFG.apiUrl) ? '' : api);
+  markServer();
   if (changed) {
     clearPrivatePhotos();
     state.accessToken = store.get('access:' + state.api, '');
@@ -1440,7 +1538,7 @@ function renderBoards() {
 }
 
 function openBoards() {
-  if (!state.api) return openSettings();
+  if (!state.api) return openServer();
   renderBoards();
   $('#boardsForm').boardName.value = '';
   openDialog(boardsDialog);
@@ -1655,7 +1753,7 @@ function openDialog(d) {
 function setDd(dd, open) {
   if (!dd || dd.classList.contains('open') === open) return;
   dd.classList.toggle('open', open);
-  $(':scope > .dd-btn, :scope > [data-action="toggle-more"]', dd)?.setAttribute('aria-expanded', String(open));
+  $(':scope > .dd-btn, :scope > [aria-haspopup]', dd)?.setAttribute('aria-expanded', String(open));
   if (open) pushLayer(dd, () => setDd(dd, false));
   else popLayer(dd);
 }
@@ -1777,11 +1875,23 @@ function animateOut(ids) {
   return new Promise((r) => setTimeout(r, 200));
 }
 
+// Удалённые или перенесённые карточки уходят (сжимаются и гаснут), затем остальные
+// плавно съезжают на освободившиеся места (FLIP: сдвиг через transform, без мигания)
 async function dropCards(ids) {
   await animateOut(ids);
   const gone = new Set(ids);
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const before = reduce ? new Map() : new Map($$('#grid .card').filter((el) => !gone.has(el.dataset.id)).map((el) => [el, el.getBoundingClientRect()]));
   state.cards = state.cards.filter((c) => !gone.has(c.id));
   render();
+  for (const [el, was] of before) {
+    if (!el.isConnected) continue;
+    const now = el.getBoundingClientRect();
+    const dx = was.left - now.left;
+    const dy = was.top - now.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+    el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.2, .8, .2, 1)' });
+  }
 }
 
 const goodsText = (n) => `${n} ${plural(n, 'товар', 'товара', 'товаров')}`;
@@ -1878,47 +1988,64 @@ async function moveToNewBoard() {
   }
 }
 
-// Долгое нажатие: карточка медленно «вдавливается», через 450 мс включается выбор.
-// Сдвиг пальца больше чем на 10 px (прокрутка) отменяет нажатие.
+// Долгое нажатие: карточка одним плавным движением «вдавливается» за 450 мс (класс .holding),
+// на пороге — короткая вибрация, включается выбор, карточка один раз мягко «садится» обратно.
+// Сдвиг пальца больше чем на 10 px (прокрутка) отменяет нажатие: карточка тихо возвращается без пружины.
+// Пока палец на карточке, сетка не перерисовывается (фоновый опрос подождёт) — узлы не пересоздаются.
+const HOLD_DELAY_MS = 40; // чуть ждём, чтобы начало прокрутки не «дёргало» карточку
 let press = null;
 let pressFired = false;
 let lastPointerType = 'mouse';
+let renderDeferred = false;
 
-function cancelPress() {
+// Один источник масштаба на карточке — .holding. Отпустили до порога (тап) или начали прокрутку —
+// карточка плавно, одним переходом от текущего масштаба, возвращается к 1 (.unhold, без отскока).
+// settle — сработал порог: возврат обычной пружиной (одна мягкая «посадка»)
+function cancelPress(settle = false) {
   if (!press) return;
+  const { card } = press;
   clearTimeout(press.timer);
   clearTimeout(press.holdTimer);
-  press.card.classList.remove('holding');
   press = null;
+  if (card.classList.contains('holding')) {
+    if (settle !== true) {
+      card.classList.add('unhold');
+      setTimeout(() => card.classList.remove('unhold'), 220);
+    }
+    card.classList.remove('holding');
+  }
+  if (renderDeferred) {
+    renderDeferred = false;
+    render();
+  }
 }
 
 function firePress() {
-  const { card, id } = press;
-  cancelPress();
+  const { id } = press;
+  cancelPress(true);
   pressFired = true;
   buzz(10);
   if (state.selecting) toggleSelected(id);
   else enterSelection(id);
-  card.classList.add('picked');
-  setTimeout(() => card.classList.remove('picked'), 320);
 }
 
 function bindLongPress(grid) {
   grid.addEventListener('pointerdown', (e) => {
-    cancelPress();
+    if (press) cancelPress();
     if (e.button !== 0 || !e.isPrimary) return;
     const card = !ddSwallowClick && e.target.closest('.card');
     // Сердце всегда голосует, даже если его подержать подольше
     if (!card || (!state.selecting && e.target.closest('[data-vote]'))) return;
     press = { card, id: card.dataset.id, x: e.clientX, y: e.clientY, pointerId: e.pointerId };
-    press.holdTimer = setTimeout(() => card.classList.add('holding'), 90);
+    press.holdTimer = setTimeout(() => card.classList.add('holding'), HOLD_DELAY_MS);
     press.timer = setTimeout(firePress, LONG_PRESS_MS);
   });
   grid.addEventListener('pointermove', (e) => {
     if (press && e.pointerId === press.pointerId && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) cancelPress();
   }, { passive: true });
-  for (const type of ['pointerup', 'pointercancel']) window.addEventListener(type, cancelPress, { passive: true });
-  window.addEventListener('scroll', cancelPress, { passive: true });
+  window.addEventListener('pointerup', () => cancelPress(), { passive: true });
+  window.addEventListener('pointercancel', () => cancelPress(), { passive: true });
+  window.addEventListener('scroll', () => cancelPress(), { passive: true });
   // Без системного меню и перетаскивания картинок на карточках
   grid.addEventListener('contextmenu', (e) => {
     const card = e.target.closest('.card');
@@ -1947,7 +2074,11 @@ function bindLongPress(grid) {
 // Всё нажимаемое чуть «проседает» под пальцем (класс .pressed, стили — в CSS).
 // На касание реагируем с задержкой 50 мс, чтобы прокрутка ленты не дёргала карточки,
 // а быстрый тап всё равно получает заметный отклик не короче 110 мс.
-const PRESSABLE = 'button, a.btn, .share-targets a, .card, [role="button"]';
+// Карточки сюда не входят: их нажатие ведёт долгое нажатие (класс .holding), чтобы два отклика не спорили
+const PRESSABLE = 'button, a.btn, .share-targets a, [role="button"]';
+
+// Снять отклик нажатия (например, когда долгое нажатие на иконке показало подсказку) — без мигания
+let clearPressFeedback = () => {};
 
 function bindPressFeedback() {
   let el = null;
@@ -1974,6 +2105,7 @@ function bindPressFeedback() {
     if (left > 0 && t.classList.contains('pressed')) setTimeout(() => t.classList.remove('pressed'), left);
     else t.classList.remove('pressed');
   };
+  clearPressFeedback = () => off(false);
   document.addEventListener('pointerdown', (e) => {
     lastPointerType = e.pointerType;
     pressFired = false;
@@ -2429,6 +2561,8 @@ function bindTooltips() {
     start = { x: e.clientX, y: e.clientY };
     tipTimer = setTimeout(() => {
       tipFired = true;
+      // Это не нажатие, а подсказка: кнопка перестаёт быть «нажатой», масштаб не складывается
+      clearPressFeedback();
       buzz(8);
       showTip(el);
       tipHideTimer = setTimeout(hideTip, 1500);
@@ -2467,7 +2601,8 @@ function bindTooltips() {
 let toastTimer;
 function toast(msg) {
   const t = $('#toast');
-  t.textContent = msg;
+  // Текст — во внутреннем блоке: он ограничен двумя строками, а отступы тоста не «подсматривают» третью
+  t.replaceChildren(Object.assign(document.createElement('span'), { className: 'tx', textContent: msg }));
   // Поверх открытых окон (верхний слой браузера), иначе тост в карточке не виден
   if (typeof t.showPopover === 'function') {
     try {
@@ -2517,7 +2652,7 @@ function bind() {
     if (!actEl && card) return openViewer(card.dataset.id);
     if (!actEl) return;
     const c = state.cards.find((x) => x.id === state.openId);
-    if (actEl.dataset.action !== 'toggle-more') setDd(actEl.closest('.dd.more'), false);
+    if (!['toggle-more', 'sum-menu'].includes(actEl.dataset.action)) setDd(actEl.closest('.dd.more, .sum-dd'), false);
     switch (actEl.dataset.action) {
       case 'add':
         return openAdd();
@@ -2544,6 +2679,8 @@ function bind() {
       }
       case 'settings':
         return openSettings();
+      case 'server':
+        return openServer();
       case 'close-dialog':
         return actEl.closest('dialog')?.close();
       case 'boards':
@@ -2557,7 +2694,7 @@ function bind() {
       case 'delete-board':
         return removeBoard(actEl.closest('[data-board]').dataset.board);
       case 'share-board':
-        if (!state.api) return openSettings();
+        if (!state.api) return openServer();
         return share({ title: 'Выбираем вместе', text: 'Голосуй за товары в нашей подборке', url: boardUrl() });
       case 'reload':
         return state.unlocked ? loadCards() : enterApp();
@@ -2581,8 +2718,19 @@ function bind() {
         actEl.textContent = open ? actEl.dataset.less : actEl.dataset.more;
         return;
       }
+      case 'sum-menu':
+        return toggleSumMenu();
       case 'refresh-incomplete':
         return refreshIncomplete();
+      case 'refresh-all':
+        return refreshCards(visibleCards().map((c) => c.id));
+      case 'refresh-selected': {
+        const ids = visibleCards().filter((c) => state.selected.has(c.id)).map((c) => c.id);
+        exitSelection();
+        return refreshCards(ids);
+      }
+      case 'select-start':
+        return enterSelection();
       case 'stop-refresh':
         if (state.bulkRefresh) state.bulkRefresh.stop = true;
         return toast('Останавливаю после текущего товара');
@@ -2595,7 +2743,7 @@ function bind() {
       case 'toggle-setup':
         return setSetupOpen(!$('#setupBox').classList.contains('open'));
       case 'test-api':
-        return testApi($('#settingsForm').apiUrl.value);
+        return testApi($('#serverForm').apiUrl.value);
       case 'copy-share':
         return copy($('#shareUrl').value);
       case 'toggle-password':
@@ -2671,7 +2819,7 @@ function bind() {
     if (location.hash.startsWith('#card=')) history.replaceState(null, '', location.pathname + location.search);
   });
   viewer.addEventListener('click', (e) => e.target === viewer && closeViewer());
-  for (const d of [addDialog, editDialog, settingsDialog, $('#shareDialog'), $('#boardsDialog'), moveDialog, confirmBox])
+  for (const d of [addDialog, editDialog, settingsDialog, serverDialog, $('#shareDialog'), $('#boardsDialog'), moveDialog, confirmBox])
     d.addEventListener('click', (e) => e.target === d && d.close());
   // Окно закрылось чем угодно (✕, Escape, тап мимо, отправка формы) — убираем его слой из истории «Назад»
   for (const d of $$('dialog')) d.addEventListener('close', () => popLayer(d));
@@ -2713,7 +2861,7 @@ function bind() {
   $('#editForm').addEventListener('submit', (e) => {
     if (e.submitter?.value === 'save') saveEdit();
   });
-  $('#settingsForm').addEventListener('submit', (e) => {
+  $('#serverForm').addEventListener('submit', (e) => {
     if (e.submitter?.value === 'save') saveSettings();
   });
 
