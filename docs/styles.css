@@ -324,8 +324,11 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .parse-info { margin: -4px 0 0; font-size: 13px; color: var(--muted); min-height: 18px; }
 .parse-info b { color: var(--text); }
-.import-help summary { cursor: pointer; padding: 10px 0; }
-.import-help > div { display: grid; gap: 10px; justify-items: start; padding-bottom: 4px; }
+.import-help .acc-body > div { display: grid; gap: 10px; justify-items: start; }
+.import-help .acc-ic { color: var(--muted); }
+.import-help .hint { line-height: 1.45; }
+.import-help .btn { background: var(--surface); }
+.import-help textarea { background: var(--surface); font-size: 12px; min-height: 0; }
 .import-help [hidden] { display: none; }
 .progress {
   list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px;
