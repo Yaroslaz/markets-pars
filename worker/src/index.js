@@ -1,7 +1,7 @@
 import { parseProduct, productFromBrowser, mergeBrowserProduct, extractUrls, HttpError } from './parsers.js';
 import { accessConfig, requireSession, signIn } from './access.js';
 
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const STALE_MS = 6 * 60 * 60 * 1000; // через сколько обновлять цену/рейтинг в фоне
 const MAX_PHOTO_BYTES = 512 * 1024;
 // Лайки берём тем же запросом, что и карточки, — один поход в базу вместо нескольких
@@ -112,6 +112,8 @@ async function route(request, env, ctx) {
   if (path === '/api/cards' && method === 'GET') return jsonTagged(request, await cardsData(env, ctx, url));
   if (path === '/api/cards' && method === 'POST') return addCard(env, await body(request));
   if (path === '/api/cards/import' && method === 'POST') return addCard(env, await body(request), true);
+  if (path === '/api/cards/move' && method === 'POST') return moveCards(env, await body(request));
+  if (path === '/api/cards/delete' && method === 'POST') return deleteCards(env, await body(request));
   if (path === '/api/parse' && method === 'POST') {
     const { url: link, shareText } = await body(request);
     return json({ product: await parseProduct(firstUrl(link), shareText ?? link) });
@@ -405,6 +407,63 @@ async function deleteCard(env, id) {
     env.DB.prepare('DELETE FROM cards WHERE id = ?').bind(id),
   ]);
   return json({ ok: true });
+}
+
+/* -------------------------- Несколько карточек -------------------------- */
+// Список карточек передаём в SQL одной JSON-строкой через json_each — так не упираемся
+// в ограничение D1 на число параметров и укладываемся в один пакетный запрос.
+
+const MAX_BULK = 200;
+
+function cardIds(value) {
+  if (!Array.isArray(value) || !value.length) throw new HttpError(400, 'Нужен список карточек');
+  if (value.length > MAX_BULK) throw new HttpError(400, `За раз можно выбрать не больше ${MAX_BULK} карточек`);
+  const ids = [...new Set(value)];
+  if (!ids.every((id) => typeof id === 'string' && /^[\w-]{1,40}$/.test(id))) {
+    throw new HttpError(400, 'Неверный номер карточки');
+  }
+  return JSON.stringify(ids);
+}
+
+// Карточки из списка, у которых в целевой подборке уже есть такой же товар
+const TWINS = `SELECT c.id AS id, t.id AS target FROM cards c
+  JOIN cards t ON t.board = ?2 AND t.source = c.source AND t.product_id = c.product_id
+  WHERE c.id IN (SELECT value FROM json_each(?1)) AND c.board != ?2`;
+
+async function moveCards(env, input) {
+  const ids = cardIds(input.ids);
+  const target = String(input.board ?? '');
+  if (!/^[\w-]{1,40}$/.test(target)) throw new HttpError(400, 'Неверная подборка');
+  const exists = await env.DB.prepare('SELECT 1 FROM boards WHERE id = ?').bind(target).first();
+  if (!exists) throw new HttpError(404, 'Подборка не найдена');
+
+  // Всё одним пакетом (транзакцией). Если такой товар в подборке уже есть, оставляем ту карточку:
+  // переносим на неё лайки и своё фото (если у неё фото нет), а дубль удаляем.
+  const q = (sql) => env.DB.prepare(sql).bind(ids, target);
+  const [twins, , , , , , moved] = await env.DB.batch([
+    q(TWINS),
+    q(`INSERT OR IGNORE INTO votes (card_id, voter, kind, created_at)
+       SELECT tw.target, v.voter, v.kind, v.created_at FROM votes v JOIN (${TWINS}) tw ON tw.id = v.card_id`),
+    q(`INSERT OR IGNORE INTO card_photos (card_id, version, bytes)
+       SELECT tw.target, p.version, p.bytes FROM card_photos p JOIN (${TWINS}) tw ON tw.id = p.card_id`),
+    q(`DELETE FROM votes WHERE card_id IN (SELECT id FROM (${TWINS}))`),
+    q(`DELETE FROM card_photos WHERE card_id IN (SELECT id FROM (${TWINS}))`),
+    q(`DELETE FROM cards WHERE id IN (SELECT id FROM (${TWINS}))`),
+    // OR IGNORE: если в списке оказались одинаковые товары из разных подборок, лишний останется на месте
+    q(`UPDATE OR IGNORE cards SET board = ?2 WHERE id IN (SELECT value FROM json_each(?1)) AND board != ?2`),
+  ]);
+  return json({ ok: true, moved: moved.meta?.changes ?? 0, merged: twins.results });
+}
+
+async function deleteCards(env, input) {
+  const ids = cardIds(input.ids);
+  const inList = 'IN (SELECT value FROM json_each(?))';
+  const [, , cards] = await env.DB.batch([
+    env.DB.prepare(`DELETE FROM votes WHERE card_id ${inList}`).bind(ids),
+    env.DB.prepare(`DELETE FROM card_photos WHERE card_id ${inList}`).bind(ids),
+    env.DB.prepare(`DELETE FROM cards WHERE id ${inList}`).bind(ids),
+  ]);
+  return json({ ok: true, deleted: cards.meta?.changes ?? 0 });
 }
 
 /* ------------------------------- Лайки ------------------------------- */
