@@ -185,7 +185,6 @@ main { padding: 0 calc(var(--safe-r) + 10px) calc(var(--dock-h) + var(--safe-b) 
 .card {
   background: var(--surface); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow);
   display: flex; flex-direction: column; cursor: pointer; position: relative; min-width: 0;
-  animation: pop .25s ease both;
 }
 @keyframes pop { from { opacity: 0; transform: translateY(6px); } }
 .card .photo { position: relative; aspect-ratio: 3 / 4; background: var(--surface-2); overflow: hidden; }
@@ -282,22 +281,31 @@ main { padding: 0 calc(var(--safe-r) + 10px) calc(var(--dock-h) + var(--safe-b) 
   pointer-events: none;
 }
 .dock > * { pointer-events: auto; }
+/* Островок суммы — кнопка: открывает меню обновления. Появляется анимацией только из скрытого состояния */
+.sum-dd { max-width: 100%; animation: pop .2s ease both; }
 .sumbar {
-  display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border-radius: 18px;
-  font-size: 13px; max-width: 100%; white-space: nowrap; animation: pop .2s ease both;
+  display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border-radius: 18px; border: 0;
+  font: inherit; font-size: 13px; color: var(--text); max-width: 100%; white-space: nowrap; --press: .96;
 }
 .sumbar svg { width: 16px; height: 16px; color: color-mix(in srgb, var(--text) 70%, transparent); }
 .sumbar svg.duo { width: 22px; height: 19px; }
 .sumbar .cnt { color: color-mix(in srgb, var(--text) 78%, transparent); overflow: hidden; text-overflow: ellipsis; }
 .sumbar b { font-weight: 700; font-variant-numeric: tabular-nums; }
 .sumbar .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--muted); flex: none; }
-.sumbar .sum-refresh {
-  display: inline-flex; align-items: center; gap: 5px; flex: none; height: 28px; margin-right: -10px; padding: 0 10px;
-  border: 0; border-radius: 14px; font: inherit; font-weight: 600; color: var(--text);
+/* Метка «есть что обновить» / ход обновления «3 из 12» */
+.sumbar .sum-chip {
+  display: inline-flex; align-items: center; gap: 4px; flex: none; height: 24px; margin-right: -8px; padding: 0 9px;
+  border-radius: 12px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text);
   background: color-mix(in srgb, var(--text) 8%, transparent);
 }
-.sumbar .sum-refresh svg { width: 14px; height: 14px; color: currentColor; }
-.sumbar .sum-refresh.busy svg { animation: spin 1s linear infinite; }
+.sumbar .sum-chip svg { width: 13px; height: 13px; color: currentColor; }
+.sumbar .sum-chip.busy svg { animation: spin 1s linear infinite; }
+/* Меню над островком: открывается вверх, по центру */
+.dd-menu.up {
+  top: auto; bottom: calc(100% + 8px); left: 50%; width: min(290px, calc(100vw - 20px));
+  transform: translate(-50%, 6px) scale(.98); transform-origin: 50% 100%;
+}
+.dd.open .dd-menu.up { transform: translate(-50%, 0); }
 .dock-row { display: flex; gap: 8px; width: 100%; }
 .tabbar {
   flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); height: 54px; border-radius: 20px; padding: 0 4px; min-width: 0;
@@ -554,18 +562,19 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .role-switch .active svg { stroke: #fff; fill: #fff; }
 
 /* ---------- Тост ---------- */
-/* Во всю ширину с отступами по краям; длинный текст — в две строки, а не обрезается */
+/* Длинный текст — в две строки, а не обрезается */
+/* От края до края экрана сразу под строкой состояния; текст с обычными внутренними отступами */
 .toast {
-  position: fixed; z-index: 100; inset: auto; width: auto; height: auto; border: 0; top: calc(var(--safe-t) + 64px);
-  left: calc(var(--safe-l) + 10px); right: calc(var(--safe-r) + 10px);
-  max-width: 600px; margin: 0 auto; transform: translateY(-10px);
-  background: var(--accent); color: var(--accent-text); padding: 11px 16px; border-radius: 14px;
+  position: fixed; z-index: 100; inset: auto; width: auto; height: auto; border: 0; top: var(--safe-t);
+  left: 0; right: 0; max-width: none; margin: 0; transform: translateY(-12px);
+  background: var(--accent); color: var(--accent-text); border-radius: 0 0 14px 14px;
+  padding: 12px calc(var(--safe-r) + 16px) 12px calc(var(--safe-l) + 16px);
   font-size: 14px; line-height: 1.35; font-weight: 500; text-align: center; text-wrap: balance;
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere;
   opacity: 0; pointer-events: none; transition: opacity .25s ease, transform .25s ease; box-shadow: var(--shadow-lg);
 }
 .toast.show { opacity: 1; transform: none; }
-@media (max-width: 359px) { .toast { font-size: 13px; padding: 10px 12px; } }
+@media (max-width: 359px) { .toast { font-size: 13px; } }
 
 /* ---------- Узкие экраны ---------- */
 @media (max-width: 359px) {
@@ -610,18 +619,17 @@ button, a, input, label, select, textarea, summary, .card, [role="button"] { tou
 /* Сила «проседания» зависит от размера: крупное проседает меньше */
 :root { --spring: cubic-bezier(.34, 1.56, .64, 1); }
 .btn, .tab, .dd-btn, .board-btn, .role-opt, .role-switch button, .theme-switch button, .font-switch button, .share-targets a, .tool { --press: .96; }
-.icon-btn, .vote, .fab, .sum-refresh, .thumbs button { --press: .9; }
-.card { --press: .97; }
+.icon-btn, .vote, .fab, .thumbs button { --press: .9; }
 .dd-opt, .board-pick, .acc-head { --press: .98; }
 .btn, .icon-btn, .tab, .fab, .vote, .dd-opt, .dd-btn, .board-btn, .board-pick, .role-opt, .role-switch button,
-.theme-switch button, .font-switch button, .acc-head, .sum-refresh, .thumbs button, .share-targets a, .tool, .card {
+.theme-switch button, .font-switch button, .acc-head, .sumbar, .thumbs button, .share-targets a, .tool, .card {
   /* отпускание — пружиной, нажатие — быстро (длительность меняет .pressed) */
   transition: scale var(--press-t, .38s) var(--press-ease, var(--spring)), transform .15s ease, background-color .15s ease,
     color .15s ease, opacity .15s ease, box-shadow .2s ease, filter .15s ease;
   -webkit-touch-callout: none;
 }
 :is(.btn, .icon-btn, .tab, .fab, .vote.own, .dd-opt, .dd-btn, .board-btn, .board-pick, .role-opt, .role-switch button,
-.theme-switch button, .font-switch button, .acc-head, .sum-refresh, .thumbs button, .share-targets a, .tool):active:not(:disabled),
+.theme-switch button, .font-switch button, .acc-head, .sumbar, .thumbs button, .share-targets a, .tool):active:not(:disabled),
 .pressed {
   scale: var(--press, .96);
   --press-t: .08s; --press-ease: ease-out;
@@ -632,16 +640,16 @@ button, a, input, label, select, textarea, summary, .card, [role="button"] { tou
 :root[data-theme="dark"] { --hover-filter: brightness(1.18); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --hover-filter: brightness(1.18); } }
 @media (hover: hover) and (pointer: fine) {
-  :is(.btn, .icon-btn, .fab, .vote.own, .dd-btn, .board-btn, .role-opt, .role-switch button, .font-switch button, .sum-refresh):hover:not(:disabled) { filter: var(--hover-filter); }
+  :is(.btn, .icon-btn, .fab, .vote.own, .dd-btn, .board-btn, .role-opt, .role-switch button, .font-switch button, .sumbar):hover:not(:disabled) { filter: var(--hover-filter); }
   .tab:not(.active):hover, .theme-switch button:not(.active):hover { color: var(--text); }
   .acc-head:hover { color: var(--text); }
 }
 @media (prefers-reduced-motion: reduce) {
   :is(.btn, .icon-btn, .tab, .fab, .vote.own, .dd-opt, .dd-btn, .board-btn, .board-pick, .role-opt, .role-switch button,
-  .theme-switch button, .font-switch button, .acc-head, .sum-refresh, .thumbs button, .share-targets a, .tool):active:not(:disabled),
+  .theme-switch button, .font-switch button, .acc-head, .sumbar, .thumbs button, .share-targets a, .tool):active:not(:disabled),
   .pressed { scale: none; opacity: .7; }
   .card.holding { scale: none; opacity: .75; }
-  .card.picked { animation: none; }
+  .card.enter { animation: none; }
 }
 .btn.danger { background: var(--danger); color: #fff; }
 
@@ -651,9 +659,13 @@ button, a, input, label, select, textarea, summary, .card, [role="button"] { tou
 .card { -webkit-user-select: none; user-select: none; }
 .card img { -webkit-user-drag: none; }
 /* Долгое нажатие: карточка медленно вдавливается, пока не включится выбор */
-.card.holding { scale: .94; --press-t: .36s; --press-ease: cubic-bezier(.45, 0, .75, 1); }
-.card.picked { animation: picked .32s var(--spring); }
-@keyframes picked { 0% { scale: .94; } 60% { scale: 1.02; } 100% { scale: 1; } }
+/* Появление — только у новых карточек и один раз (класс .enter снимается в app.js) */
+.card.enter { animation: pop .25s ease both; }
+/* Долгое нажатие: одно непрерывное вдавливание до порога (450 мс минус задержка 40 мс),
+   после порога или при отпускании — одна мягкая пружинная «посадка» обратно */
+.card.holding { scale: .95; --press-t: .41s; --press-ease: cubic-bezier(.33, 0, .67, 1); }
+/* Отмена прокруткой — быстрый возврат без отскока */
+.card.unhold { --press-t: .18s; --press-ease: ease-out; }
 .card.leaving { opacity: 0; scale: .9; transition: opacity .18s ease, scale .2s ease; pointer-events: none; }
 .sel-ck {
   position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;

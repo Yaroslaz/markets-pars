@@ -570,6 +570,8 @@ function cardHtml(c) {
 const cardSig = new Map();
 
 function render() {
+  // Палец держит карточку — перерисуем, когда отпустит (иначе узел карточки может смениться посреди нажатия)
+  if (press) return void (renderDeferred = true);
   pruneSelection();
   renderGrid();
   syncSelection();
@@ -643,11 +645,21 @@ function renderGrid() {
       const tmp = document.createElement('div');
       tmp.innerHTML = cardHtml(c);
       const fresh = tmp.firstElementChild;
+      const photoKey = JSON.stringify([c.source, c.thumbs?.[0] || c.images?.[0] || '', c.images?.length || 0]);
       if (el) {
-        fresh.style.animation = 'none';
-        el.replaceWith(fresh);
+        // Карточка уже на экране — обновляем содержимое на месте: сам узел, его классы (выбор, нажатие)
+        // и идущие переходы сохраняются, а фото перерисовывается, только если оно и правда сменилось
+        if (el.dataset.photoKey !== photoKey) el.querySelector('.photo').replaceWith(fresh.querySelector('.photo'));
+        el.querySelector('.body').replaceWith(fresh.querySelector('.body'));
+      } else {
+        // Появление анимируем только у новых карточек и один раз: класс снимается по окончании,
+        // поэтому смена других классов (выбор, нажатие) анимацию не перезапускает
+        el = fresh;
+        el.classList.add('enter');
+        const done = (e) => e.target === el && (el.classList.remove('enter'), el.removeEventListener('animationend', done));
+        el.addEventListener('animationend', done);
       }
-      el = fresh;
+      el.dataset.photoKey = photoKey;
       cardSig.set(c.id, sig);
     }
     const want = prev ? prev.nextElementSibling : grid.firstElementChild;
@@ -657,43 +669,82 @@ function renderGrid() {
   loadPrivatePhotos(grid);
 }
 
-// Островок над таб-баром: сколько товаров на экране и на какую сумму
-function updateSum() {
-  const bar = $('#sumbar');
-  // В режиме выбора островок считает только выбранные товары
+// Островок над таб-баром: сколько товаров на экране и на какую сумму. Нажатие открывает меню
+// обновления (вверх от островка). Содержимое правится на месте, а не пересоздаётся: островок не
+// «прыгает», значок обновления крутится без рывков, а появляется (анимация) только из скрытого состояния.
+const sumDd = $('#sumDd');
+const sumBar = $('#sumbar');
+
+function sumList() {
   const shown = state.api && !(state.loading && !state.cards.length) ? visibleCards() : [];
-  const list = state.selecting ? shown.filter((c) => state.selected.has(c.id)) : shown;
+  return state.selecting ? shown.filter((c) => state.selected.has(c.id)) : shown;
+}
+
+function updateSum() {
+  // В режиме выбора островок считает только выбранные товары
+  const list = sumList();
   if (!list.length) {
-    bar.hidden = true;
+    sumDd.hidden = true;
+    setDd(sumDd, false);
     return;
   }
   const priced = list.filter((c) => c.price != null);
   const total = priced.reduce((a, c) => a + c.price, 0);
   const n = list.length;
-  const what = `${n} ${plural(n, 'товар', 'товара', 'товаров')}`;
-  const incomplete = list.filter(isIncomplete).length;
+  const incomplete = state.selecting ? 0 : list.filter(isIncomplete).length;
   const bulk = state.bulkRefresh;
-  const refresh = state.selecting ? '' : bulk
-    ? `<button type="button" class="sum-refresh busy" data-action="stop-refresh" title="Остановить обновление"><svg><use href="#i-refresh"/></svg><span>${bulk.done} из ${bulk.total}</span></button>`
-    : incomplete
-      ? `<button type="button" class="sum-refresh" data-action="refresh-incomplete" title="Обновить цену и фото у товаров без данных"><svg><use href="#i-refresh"/></svg><span>Обновить ${incomplete}</span></button>`
-      : '';
-  bar.innerHTML = `${state.filter === 'both' ? '<svg class="duo"><use href="#i-duo"/></svg>' : '<svg><use href="#i-bag"/></svg>'}<span class="cnt">${what}</span>${priced.length ? `<i class="sep"></i><b>${rub(total)}</b>` : ''}${refresh}`;
-  bar.hidden = false;
+  // Каркас пересобираем, только когда меняется его вид; цифры — обычной заменой текста
+  const shape = [state.filter === 'both', priced.length > 0, bulk ? 'busy' : incomplete ? 'todo' : ''].join();
+  if (sumBar.dataset.shape !== shape) {
+    sumBar.dataset.shape = shape;
+    sumBar.innerHTML = `${state.filter === 'both' ? '<svg class="duo"><use href="#i-duo"/></svg>' : '<svg><use href="#i-bag"/></svg>'}<span class="cnt"></span>${
+      priced.length ? '<i class="sep"></i><b class="sum"></b>' : ''}${
+      bulk ? '<span class="sum-chip busy"><svg><use href="#i-refresh"/></svg><span class="v"></span></span>'
+        : incomplete ? '<span class="sum-chip"><svg><use href="#i-refresh"/></svg><span class="v"></span></span>' : ''}`;
+  }
+  $('.cnt', sumBar).textContent = `${n} ${plural(n, 'товар', 'товара', 'товаров')}`;
+  const sum = $('.sum', sumBar);
+  if (sum) sum.textContent = rub(total);
+  const chip = $('.sum-chip .v', sumBar);
+  if (chip) chip.textContent = bulk ? `${bulk.done} из ${bulk.total}` : String(incomplete);
+  sumBar.setAttribute('aria-label', `${$('.cnt', sumBar).textContent}${priced.length ? ', ' + rub(total) : ''}. ${
+    bulk ? `Обновление: ${bulk.done} из ${bulk.total}` : 'Меню обновления'}`);
+  sumDd.hidden = false;
+  if (sumDd.classList.contains('open')) renderSumMenu();
+}
+
+function renderSumMenu() {
+  const visible = visibleCards();
+  const sel = state.selecting ? visible.filter((c) => state.selected.has(c.id)) : [];
+  const incomplete = state.selecting ? 0 : visible.filter(isIncomplete).length;
+  const bulk = state.bulkRefresh;
+  const item = (action, icon, label, cls = '') =>
+    `<button type="button" class="dd-opt ${cls}" role="menuitem" data-action="${action}"><span class="ic"><svg><use href="#${icon}"/></svg></span><span class="lbl">${label}</span></button>`;
+  $('#sumMenu').innerHTML = bulk
+    ? `<div class="dd-group">Обновляю ${bulk.done} из ${bulk.total}</div>${item('stop-refresh', 'i-close', 'Остановить')}`
+    : state.selecting
+      ? item('refresh-selected', 'i-refresh', `Обновить выбранные (${sel.length})`)
+      : `${item('refresh-all', 'i-refresh', `Обновить всё (${visible.length})`)}${
+          incomplete ? item('refresh-incomplete', 'i-history', `Обновить без данных (${incomplete})`) : ''}
+        <div class="dd-sep"></div>${item('select-start', 'i-select-all', 'Выбрать')}`;
+}
+
+function toggleSumMenu() {
+  const open = !sumDd.classList.contains('open');
+  if (open) renderSumMenu();
+  setDd(sumDd, open);
 }
 
 // Товар без цены или без фото — его стоит перечитать
 const isIncomplete = (c) => c.price == null || !c.images?.length;
 
-// «Обновить N»: по очереди перечитывает все товары на экране, у которых нет цены или фото.
-// В приложении для Android Ozon, Маркет и AliExpress читаются с телефона, остальное — сервером.
-async function refreshIncomplete() {
-  if (state.bulkRefresh) return;
+// Перечитывает товары по очереди. В приложении для Android (и с расширением) Ozon, Маркет
+// и AliExpress читаются с телефона, остальное — сервером. onlyMissing — подсчёт «дополнено» для товаров без данных.
+async function refreshCards(ids, { onlyMissing = false } = {}) {
+  if (state.bulkRefresh || !ids.length) return;
   const board = state.board;
-  const ids = visibleCards().filter(isIncomplete).map((c) => c.id);
-  if (!ids.length) return;
   const run = (state.bulkRefresh = { done: 0, total: ids.length, stop: false });
-  let fixed = 0;
+  let good = 0;
   updateSum();
   for (const id of ids) {
     if (run.stop || state.board !== board || !state.unlocked) break;
@@ -705,7 +756,7 @@ async function refreshIncomplete() {
         const r = viaPhone?.card ? viaPhone : await api(`/api/cards/${id}/refresh`, { method: 'POST', body: {} });
         if (state.board === board) {
           upsertCard(r.card);
-          if (!isIncomplete(withUploadedPhoto(r.card))) fixed++;
+          if (!onlyMissing || !isIncomplete(withUploadedPhoto(r.card))) good++;
         }
       } catch {}
       // Пауза между страницами магазина, чтобы он не принял нас за бота
@@ -716,8 +767,12 @@ async function refreshIncomplete() {
   }
   state.bulkRefresh = null;
   render();
-  toast(fixed ? `Дополнено ${fixed} из ${run.done}` : 'Новых данных не нашлось');
+  if (onlyMissing) toast(good ? `Дополнено ${good} из ${run.done}` : 'Новых данных не нашлось');
+  else toast(run.stop ? `Остановлено: обновлено ${good} из ${run.total}` : `Обновлено ${good} из ${run.done}`);
 }
+
+// «Обновить без данных»: только товары на экране без цены или фото
+const refreshIncomplete = () => refreshCards(visibleCards().filter(isIncomplete).map((c) => c.id), { onlyMissing: true });
 
 function setFilter(f) {
   state.filter = f;
@@ -1643,7 +1698,7 @@ function openDialog(d) {
 function setDd(dd, open) {
   if (!dd || dd.classList.contains('open') === open) return;
   dd.classList.toggle('open', open);
-  $(':scope > .dd-btn, :scope > [data-action="toggle-more"]', dd)?.setAttribute('aria-expanded', String(open));
+  $(':scope > .dd-btn, :scope > [aria-haspopup]', dd)?.setAttribute('aria-expanded', String(open));
   if (open) pushLayer(dd, () => setDd(dd, false));
   else popLayer(dd);
 }
@@ -1866,29 +1921,43 @@ async function moveToNewBoard() {
   }
 }
 
-// Долгое нажатие: карточка медленно «вдавливается», через 450 мс включается выбор.
-// Сдвиг пальца больше чем на 10 px (прокрутка) отменяет нажатие.
+// Долгое нажатие: карточка одним плавным движением «вдавливается» за 450 мс (класс .holding),
+// на пороге — короткая вибрация, включается выбор, карточка один раз мягко «садится» обратно.
+// Сдвиг пальца больше чем на 10 px (прокрутка) отменяет нажатие: карточка тихо возвращается без пружины.
+// Пока палец на карточке, сетка не перерисовывается (фоновый опрос подождёт) — узлы не пересоздаются.
+const HOLD_DELAY_MS = 40; // чуть ждём, чтобы начало прокрутки не «дёргало» карточку
 let press = null;
 let pressFired = false;
 let lastPointerType = 'mouse';
+let renderDeferred = false;
 
-function cancelPress() {
+// soft — отмена прокруткой: без пружинного отскока
+function cancelPress(soft = false) {
   if (!press) return;
+  const { card } = press;
   clearTimeout(press.timer);
   clearTimeout(press.holdTimer);
-  press.card.classList.remove('holding');
   press = null;
+  if (card.classList.contains('holding')) {
+    if (soft === true) {
+      card.classList.add('unhold');
+      setTimeout(() => card.classList.remove('unhold'), 220);
+    }
+    card.classList.remove('holding');
+  }
+  if (renderDeferred) {
+    renderDeferred = false;
+    render();
+  }
 }
 
 function firePress() {
-  const { card, id } = press;
+  const { id } = press;
   cancelPress();
   pressFired = true;
   buzz(10);
   if (state.selecting) toggleSelected(id);
   else enterSelection(id);
-  card.classList.add('picked');
-  setTimeout(() => card.classList.remove('picked'), 320);
 }
 
 function bindLongPress(grid) {
@@ -1899,14 +1968,15 @@ function bindLongPress(grid) {
     // Сердце всегда голосует, даже если его подержать подольше
     if (!card || (!state.selecting && e.target.closest('[data-vote]'))) return;
     press = { card, id: card.dataset.id, x: e.clientX, y: e.clientY, pointerId: e.pointerId };
-    press.holdTimer = setTimeout(() => card.classList.add('holding'), 90);
+    press.holdTimer = setTimeout(() => card.classList.add('holding'), HOLD_DELAY_MS);
     press.timer = setTimeout(firePress, LONG_PRESS_MS);
   });
   grid.addEventListener('pointermove', (e) => {
-    if (press && e.pointerId === press.pointerId && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) cancelPress();
+    if (press && e.pointerId === press.pointerId && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) cancelPress(true);
   }, { passive: true });
-  for (const type of ['pointerup', 'pointercancel']) window.addEventListener(type, cancelPress, { passive: true });
-  window.addEventListener('scroll', cancelPress, { passive: true });
+  window.addEventListener('pointerup', () => cancelPress(), { passive: true });
+  window.addEventListener('pointercancel', () => cancelPress(true), { passive: true });
+  window.addEventListener('scroll', () => cancelPress(true), { passive: true });
   // Без системного меню и перетаскивания картинок на карточках
   grid.addEventListener('contextmenu', (e) => {
     const card = e.target.closest('.card');
@@ -1935,7 +2005,8 @@ function bindLongPress(grid) {
 // Всё нажимаемое чуть «проседает» под пальцем (класс .pressed, стили — в CSS).
 // На касание реагируем с задержкой 50 мс, чтобы прокрутка ленты не дёргала карточки,
 // а быстрый тап всё равно получает заметный отклик не короче 110 мс.
-const PRESSABLE = 'button, a.btn, .share-targets a, .card, [role="button"]';
+// Карточки сюда не входят: их нажатие ведёт долгое нажатие (класс .holding), чтобы два отклика не спорили
+const PRESSABLE = 'button, a.btn, .share-targets a, [role="button"]';
 
 function bindPressFeedback() {
   let el = null;
@@ -2505,7 +2576,7 @@ function bind() {
     if (!actEl && card) return openViewer(card.dataset.id);
     if (!actEl) return;
     const c = state.cards.find((x) => x.id === state.openId);
-    if (actEl.dataset.action !== 'toggle-more') setDd(actEl.closest('.dd.more'), false);
+    if (!['toggle-more', 'sum-menu'].includes(actEl.dataset.action)) setDd(actEl.closest('.dd.more, .sum-dd'), false);
     switch (actEl.dataset.action) {
       case 'add':
         return openAdd();
@@ -2569,8 +2640,19 @@ function bind() {
         actEl.textContent = open ? actEl.dataset.less : actEl.dataset.more;
         return;
       }
+      case 'sum-menu':
+        return toggleSumMenu();
       case 'refresh-incomplete':
         return refreshIncomplete();
+      case 'refresh-all':
+        return refreshCards(visibleCards().map((c) => c.id));
+      case 'refresh-selected': {
+        const ids = visibleCards().filter((c) => state.selected.has(c.id)).map((c) => c.id);
+        exitSelection();
+        return refreshCards(ids);
+      }
+      case 'select-start':
+        return enterSelection();
       case 'stop-refresh':
         if (state.bulkRefresh) state.bulkRefresh.stop = true;
         return toast('Останавливаю после текущего товара');

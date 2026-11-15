@@ -12,7 +12,7 @@
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="styles.css?v=1.7.0">
+  <link rel="stylesheet" href="styles.css?v=1.8.0">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <script>
@@ -67,7 +67,7 @@
   </script>
   <script src="config.js"></script>
   <script src="product-import.js?v=2.2.0" defer></script>
-  <script src="app.js?v=1.8.1" defer></script>
+  <script src="app.js?v=1.9.0" defer></script>
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -137,7 +137,11 @@
   </main>
 
   <div class="dock">
-    <div class="sumbar island" id="sumbar" hidden></div>
+    <!-- Островок суммы: нажатие открывает меню обновления (вверх) -->
+    <div class="dd sum-dd" id="sumDd" hidden>
+      <button type="button" class="sumbar island" id="sumbar" data-action="sum-menu" aria-haspopup="menu" aria-expanded="false"></button>
+      <div class="dd-menu up" role="menu" id="sumMenu"></div>
+    </div>
     <div class="dock-row">
       <nav class="tabbar island" aria-label="Навигация">
         <button class="tab active" data-tab="all" aria-label="Подборка" title="Подборка"><svg><use href="#i-grid"/></svg></button>
