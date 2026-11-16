@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Выбираем вместе",
   "short_name": "Вместе",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Добавляет товары Ozon, Яндекс Маркета, Wildberries и AliExpress в подборку «Выбираем вместе»: страница товара читается прямо в вашем браузере.",
   "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
   "action": {
@@ -13,7 +13,7 @@
     "service_worker": "background.js",
     "scripts": ["product-import.js", "background.js"]
   },
-  "permissions": ["scripting"],
+  "permissions": ["scripting", "offscreen", "declarativeNetRequestWithHostAccess"],
   "host_permissions": [
     "https://*.ozon.ru/*", "https://ozon.ru/*", "https://*.ozon.by/*", "https://*.ozon.kz/*", "https://ozon.onelink.me/*",
     "https://market.yandex.ru/*", "https://market.yandex.by/*", "https://market.yandex.kz/*", "https://ya.cc/*",
@@ -32,6 +32,33 @@
     {
       "matches": ["https://yaroslaz.github.io/markets-pars/*", "http://localhost/*", "http://127.0.0.1/*"],
       "js": ["relay.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*.ozon.ru/*", "https://ozon.ru/*", "https://*.ozon.by/*", "https://*.ozon.kz/*",
+        "https://market.yandex.ru/*", "https://market.yandex.by/*", "https://market.yandex.kz/*",
+        "https://*.wildberries.ru/*", "https://wildberries.ru/*", "https://*.wildberries.by/*", "https://*.wildberries.kz/*",
+        "https://*.wildberries.am/*", "https://*.wildberries.kg/*", "https://*.wildberries.uz/*",
+        "https://*.aliexpress.ru/*", "https://aliexpress.ru/*", "https://*.aliexpress.com/*", "https://aliexpress.com/*",
+        "https://*.aliexpress.us/*"
+      ],
+      "js": ["product-import.js", "frame.js"],
+      "all_frames": true,
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*.ozon.ru/*", "https://ozon.ru/*", "https://*.ozon.by/*", "https://*.ozon.kz/*",
+        "https://market.yandex.ru/*", "https://market.yandex.by/*", "https://market.yandex.kz/*",
+        "https://*.wildberries.ru/*", "https://wildberries.ru/*", "https://*.wildberries.by/*", "https://*.wildberries.kz/*",
+        "https://*.wildberries.am/*", "https://*.wildberries.kg/*", "https://*.wildberries.uz/*",
+        "https://*.aliexpress.ru/*", "https://aliexpress.ru/*", "https://*.aliexpress.com/*", "https://aliexpress.com/*",
+        "https://*.aliexpress.us/*"
+      ],
+      "js": ["frame-main.js"],
+      "all_frames": true,
+      "world": "MAIN",
       "run_at": "document_start"
     }
   ],
