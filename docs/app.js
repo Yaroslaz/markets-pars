@@ -241,6 +241,14 @@ function keepRecentVote(c) {
   return c.likes?.[v.kind] === v.value ? c : { ...c, likes: { ...c.likes, [v.kind]: v.value } };
 }
 
+// Фильтр магазина, которого нет в подборке, сбрасывается (вкладку «Обоим» не трогаем)
+let syncFilterDd = () => {};
+function fitSourceFilter() {
+  if (!state.source || !state.cards.length || state.cards.some((c) => c.source === state.source)) return;
+  state.source = '';
+  syncFilterDd();
+}
+
 function applyCards(cards, etag) {
   // не перетираем голос, который пользователь только что нажал
   const pending = new Map(state.cards.filter((c) => c._pending).map((c) => [c.id, c]));
@@ -248,6 +256,7 @@ function applyCards(cards, etag) {
   state.etag = etag || '';
   state.error = '';
   if (state.booting) (state.booting = false), store.set('booted', '1');
+  fitSourceFilter();
 }
 
 /* ======================= Приложение для Android ======================= */
@@ -861,6 +870,7 @@ function filterMenu(root) {
     btn.title = `${state.source ? SOURCES[state.source].name : 'Все магазины'}, ${(SORTS.find((x) => x[0] === state.sort) || SORTS[0])[1].toLowerCase()}`;
     $$('.dd-opt', root).forEach((o) => o.setAttribute('aria-checked', o.dataset.v === state[o.dataset.k]));
   };
+  syncFilterDd = sync;
   const close = () => setDd(root, false);
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1232,7 +1242,7 @@ function refreshViewer(full = false) {
       <div class="stage">
       <div class="track" id="track">${
         imgs.length
-          ? imgs.map((u, i) => `<div class="slide"><img ${photoSource(u)} alt="Фото ${i + 1}" ${i ? 'loading="lazy"' : ''} referrerpolicy="no-referrer" data-zoom="${i}"></div>`).join('')
+          ? imgs.map((u, i) => `<div class="slide"><img ${photoSource(u)} alt="Фото ${i + 1}" ${i ? 'loading="lazy"' : ''} decoding="async" referrerpolicy="no-referrer" data-zoom="${i}"></div>`).join('')
           : `<div class="slide">${placeholderHtml(c, false)}</div>`
       }</div>
       ${imgs.length > 1 ? `<button class="icon-btn nav prev" data-action="prev" aria-label="Предыдущее фото"><svg><use href="#i-left"/></svg></button>
@@ -1240,7 +1250,7 @@ function refreshViewer(full = false) {
       <span class="counter" id="counter">1 / ${imgs.length}</span>` : ''}
       </div>
       ${imgs.length > 1 ? `<div class="thumbs" id="thumbs">${(c.thumbs?.length === imgs.length ? c.thumbs : imgs)
-        .map((u, i) => `<button data-thumb="${i}" class="${i ? '' : 'active'}" aria-label="Фото ${i + 1}"><img ${photoSource(u)} alt="" loading="lazy" referrerpolicy="no-referrer"></button>`)
+        .map((u, i) => `<button data-thumb="${i}" class="${i ? '' : 'active'}" aria-label="Фото ${i + 1}"><img ${photoSource(u)} alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"></button>`)
         .join('')}</div>` : ''}
     </div>`;
   const info = `
@@ -1460,7 +1470,8 @@ function openSettings() {
   $$('#roleSwitch [data-role]').forEach((b) => b.classList.toggle('active', b.dataset.role === state.role));
   markTheme();
   markFont();
-  previewFonts();
+  // Образцы шрифтов подгружаем после выезда листа, чтобы загрузка не мешала анимации
+  setTimeout(previewFonts, 400);
   markServer();
   markNotify();
   openDialog(settingsDialog);
@@ -1855,9 +1866,12 @@ function switchBoard(id, notify = true) {
   const cached = readCache(id);
   state.cards = cached ? cached.cards : [];
   state.etag = cached ? cached.etag : '';
-  state.source = '';
+  // Вкладка («Все» или «Обоим») и сортировка остаются как были; фильтр магазина — тоже,
+  // если в новой подборке есть такие товары (иначе он сбрасывается, чтобы экран не был пустым)
+  if (state.cards.length) fitSourceFilter();
   cardSig.clear();
-  setFilter('all');
+  render();
+  window.scrollTo({ top: 0 });
   renderBoardName();
   const loading = loadCards();
   if (notify) toast(`Подборка «${currentBoard()?.name || id}»`);
@@ -2045,9 +2059,16 @@ window.mpHandleBack = () => {
 
 // Окно входа и выбор роли «Назад» не закрывает: без них пользоваться сайтом нельзя
 const pinnedDialogs = () => [accessDialog, roleDialog];
+// Пока открыто окно, страница под ним не прокручивается. Класс вместо body:has(dialog[open]):
+// :has заставлял браузер пересчитывать стили всей страницы при каждом открытии и закрытии окна
+function syncModal() {
+  document.documentElement.classList.toggle('modal-open', !!document.querySelector('dialog[open]'));
+}
+
 function openDialog(d) {
   if (d.open) return;
   d.showModal();
+  syncModal();
   if (!pinnedDialogs().includes(d)) pushLayer(d, () => d.open && d.close());
 }
 
@@ -2433,28 +2454,41 @@ function bindPressFeedback() {
 
 /* =================== Смахивание карточки вниз — закрыть =================== */
 
-// Тянем открытую карточку вниз: она едет за пальцем, фон светлеет. Отпустили дальше 120 px
-// или резко смахнули — карточка уезжает и закрывается, иначе пружинит обратно.
+// Тянем открытую карточку вниз: она едет за пальцем один к одному. Отпустили дальше 120 px или резко
+// смахнули — карточка уезжает вниз и закрывается (затемнение за ней гаснет), иначе пружинит обратно.
 // Жест начинается, только если содержимое прокручено к началу и движение — вниз, а не вбок.
+// Во время жеста — одна запись стиля за кадр (requestAnimationFrame), размеры читаются один раз в начале;
+// жест, начатый посреди возврата, продолжает с текущего положения, без скачка.
 function bindViewerSwipe() {
   let g = null;
+  let raf = 0;
+  let y = 0;
+  let settleTimer = 0;
   const scrolled = (el) => {
     for (; el && el !== viewer; el = el.parentElement) if (el.scrollTop > 0) return true;
     return false;
   };
+  const write = () => {
+    raf = 0;
+    viewer.style.translate = `0 ${y}px`;
+  };
   const reset = () => {
-    viewer.classList.remove('dragging');
+    viewer.classList.remove('dragging', 'closing');
     viewer.style.removeProperty('transition');
     viewer.style.removeProperty('translate');
-    viewer.style.removeProperty('opacity');
-    viewer.style.removeProperty('--drag');
+  };
+  // Где карточка сейчас (например, посреди пружинного возврата)
+  const currentY = () => {
+    const t = getComputedStyle(viewer).translate;
+    const v = t && t !== 'none' ? parseFloat(t.split(' ')[1] || '0') : 0;
+    return Number.isFinite(v) ? v : 0;
   };
   viewer.addEventListener('touchstart', (e) => {
     g = null;
     if (e.touches.length !== 1 || lightbox.open || viewer.classList.contains('closing')) return;
     if (e.target.closest('.viewer-top, .dd-menu') || scrolled(e.target)) return;
     const t = e.touches[0];
-    g = { x0: t.clientX, y0: t.clientY, mode: '', y: 0, v: 0, ly: t.clientY, lt: e.timeStamp };
+    g = { x0: t.clientX, y0: t.clientY, mode: '', base: 0, v: 0, ly: t.clientY, lt: e.timeStamp };
   }, { passive: true });
   viewer.addEventListener('touchmove', (e) => {
     if (!g) return;
@@ -2466,9 +2500,11 @@ function bindViewerSwipe() {
       if (Math.hypot(dx, dy) < 6) return;
       g.mode = dy > 0 && dy > Math.abs(dx) * 1.2 && e.cancelable ? 'drag' : 'skip';
       if (g.mode === 'drag') {
+        clearTimeout(settleTimer);
+        g.base = currentY() - dy; // читаем до первой записи
         $$('.dd.open', viewer).forEach((d) => setDd(d, false));
-        viewer.classList.add('dragging');
         viewer.style.transition = 'none';
+        viewer.classList.add('dragging');
       }
     }
     if (g.mode !== 'drag') return;
@@ -2476,32 +2512,28 @@ function bindViewerSwipe() {
     g.v = (t.clientY - g.ly) / Math.max(1, e.timeStamp - g.lt);
     g.ly = t.clientY;
     g.lt = e.timeStamp;
-    // Лёгкое сопротивление: карточка отстаёт от пальца тем сильнее, чем дальше её тянут
-    const h = viewer.clientHeight || innerHeight;
-    g.y = Math.max(0, dy) * (1 - Math.min(0.35, Math.max(0, dy) / (h * 2)));
-    viewer.style.translate = `0 ${g.y}px`;
-    viewer.style.setProperty('--drag', Math.min(1, g.y / (h * 0.6)).toFixed(3));
+    y = Math.max(0, g.base + dy);
+    if (!raf) raf = requestAnimationFrame(write);
   }, { passive: false });
   const end = () => {
     if (g?.mode !== 'drag') return (g = null);
-    const { y, v } = g;
+    const { v } = g;
     g = null;
+    if (raf) (cancelAnimationFrame(raf), write());
     if (y > 120 || (v > 0.5 && y > 24)) {
+      // Уезжает вниз за пределы экрана; затемнение гаснет само (.closing::backdrop)
       viewer.classList.add('closing');
-      viewer.style.transition = 'translate .22s cubic-bezier(.4, 0, 1, 1), opacity .22s ease-in, --drag .22s linear';
+      viewer.style.transition = 'translate .26s cubic-bezier(.25, .8, .35, 1)';
       viewer.style.translate = '0 100%';
-      viewer.style.opacity = '0.6';
-      viewer.style.setProperty('--drag', '1');
-      setTimeout(() => {
+      settleTimer = setTimeout(() => {
         closeViewer();
-        viewer.classList.remove('closing');
         reset();
-      }, 230);
+      }, 270);
     } else {
-      viewer.style.transition = 'translate .32s cubic-bezier(.25, 1, .5, 1), --drag .32s ease';
+      viewer.style.transition = 'translate .3s cubic-bezier(.2, .9, .3, 1.1)';
       viewer.style.translate = '0 0';
-      viewer.style.setProperty('--drag', '0');
-      setTimeout(() => !g && reset(), 340);
+      y = 0;
+      settleTimer = setTimeout(() => !g && reset(), 320);
     }
   };
   viewer.addEventListener('touchend', end);
@@ -2515,32 +2547,75 @@ function bindViewerSwipe() {
 const lb = { index: 0, n: 0, s: 1, tx: 0, ty: 0, dx: 0, dy: 0 };
 const LB_MAX = 4;
 const lbTrack = $('#lbTrack');
+const lbScrim = $('#lbScrim');
 const lbImg = (i = lb.index) => lbTrack.children[i]?.querySelector('img');
+// Размеры экрана и фото читаются один раз — при начале жеста, открытии и повороте, а не в каждом кадре
+let lbDims = null;
+let lbRaf = 0;
+let lbIdleTimer = 0;
 
+function lbMeasure() {
+  const W = lightbox.clientWidth || innerWidth;
+  const H = lightbox.clientHeight || innerHeight;
+  const img = lbImg();
+  lbDims = { W, H, iw: img?.offsetWidth || W, ih: img?.offsetHeight || H };
+  return lbDims;
+}
+
+// Только запись стилей. Затемнение (отдельный слой) и кнопки могут гаснуть, само фото — нет
 function lbRender(animate) {
-  const w = lightbox.clientWidth || innerWidth;
-  const h = lightbox.clientHeight || innerHeight;
-  const ease = animate ? '.32s cubic-bezier(.2, .8, .2, 1)' : '0s';
+  if (lbRaf) (cancelAnimationFrame(lbRaf), (lbRaf = 0));
+  const { W, H } = lbDims || lbMeasure();
+  const ease = animate ? '.3s cubic-bezier(.2, .85, .3, 1)' : '0s';
   lbTrack.style.transition = `transform ${ease}`;
-  lbTrack.style.transform = `translate3d(${-lb.index * w + lb.dx}px, ${lb.dy}px, 0)`;
+  lbTrack.style.transform = `translate3d(${-lb.index * W + lb.dx}px, ${lb.dy}px, 0)`;
   const img = lbImg();
   if (img) {
     img.style.transition = `transform ${ease}`;
     img.style.transform = `translate3d(${lb.tx}px, ${lb.ty}px, 0) scale(${lb.s})`;
   }
-  lightbox.style.transition = animate ? '--drag .32s ease' : '';
-  lightbox.style.setProperty('--drag', Math.min(1, Math.max(0, lb.dy) / (h * 0.6)).toFixed(3));
+  const away = Math.max(0, lb.dy);
+  lbScrim.style.transition = `opacity ${ease}`;
+  lbScrim.style.opacity = String(1 - Math.min(1, away / (H * 0.6)));
+  const ui = String(Math.max(0, 1 - away / (H * 0.25)));
+  for (const el of [$('.lb-close', lightbox), $('#lbCounter')]) {
+    el.style.transition = `opacity ${ease}`;
+    el.style.opacity = ui;
+  }
   lightbox.classList.toggle('zoomed', lb.s > 1.01);
-  $('#lbCounter').textContent = lb.n > 1 ? `${lb.index + 1} / ${lb.n}` : '';
+  const counter = lb.n > 1 ? `${lb.index + 1} / ${lb.n}` : '';
+  if ($('#lbCounter').textContent !== counter) $('#lbCounter').textContent = counter;
+  // Слои «поднимаются» (will-change) только пока что-то движется
+  lightbox.classList.add('moving');
+  clearTimeout(lbIdleTimer);
+  lbIdleTimer = setTimeout(() => lightbox.classList.remove('moving'), animate ? 360 : 250);
+}
+
+// Не чаще одного раза за кадр
+function lbQueue() {
+  if (!lbRaf) lbRaf = requestAnimationFrame(() => ((lbRaf = 0), lbRender(false)));
+}
+
+// Если фото ещё доезжает или пружинит, а палец снова на экране — продолжаем с того места, где оно сейчас
+function lbFreeze() {
+  const { W } = lbDims || lbMeasure();
+  const t = new DOMMatrixReadOnly(getComputedStyle(lbTrack).transform);
+  const near0 = (v) => (Math.abs(v) < 0.5 ? 0 : v);
+  lb.dx = near0(t.m41 + lb.index * W);
+  lb.dy = near0(t.m42);
+  const img = lbImg();
+  if (img) {
+    const m = new DOMMatrixReadOnly(getComputedStyle(img).transform);
+    lb.s = m.a || 1;
+    lb.tx = m.m41;
+    lb.ty = m.m42;
+  }
+  lbRender(false);
 }
 
 // Допустимые сдвиги увеличенного фото: меньше экрана — по центру, больше — без пустых полей
 function lbBounds(s) {
-  const W = lightbox.clientWidth || innerWidth;
-  const H = lightbox.clientHeight || innerHeight;
-  const img = lbImg();
-  const iw = img?.offsetWidth || W;
-  const ih = img?.offsetHeight || H;
+  const { W, H, iw, ih } = lbDims || lbMeasure();
   const bx = (W - iw) / 2;
   const by = (H - ih) / 2;
   const range = (size, b, view) => (size * s <= view ? [(size - size * s) / 2, (size - size * s) / 2] : [view - b - size * s, -b]);
@@ -2559,8 +2634,7 @@ function lbZoomAt(s, fx, fy) {
 }
 
 function lbSettle(fx, fy) {
-  const W = lightbox.clientWidth || innerWidth;
-  const H = lightbox.clientHeight || innerHeight;
+  const { W, H } = lbDims || lbMeasure();
   if (lb.s <= 1.01) Object.assign(lb, { s: 1, tx: 0, ty: 0 });
   else if (lb.s > LB_MAX) lbZoomAt(LB_MAX, fx ?? W / 2, fy ?? H / 2);
   const b = lbBounds(lb.s);
@@ -2573,10 +2647,11 @@ function lbGo(i) {
   const old = lbImg();
   lb.index = Math.max(0, Math.min(lb.n - 1, i));
   if (old && old !== lbImg()) {
-    old.style.transition = 'transform .32s ease';
+    old.style.transition = 'transform .3s ease';
     old.style.transform = '';
   }
   Object.assign(lb, { s: 1, tx: 0, ty: 0, dx: 0, dy: 0 });
+  lbDims = null;
   lbRender(true);
 }
 
@@ -2584,13 +2659,14 @@ function openLightbox(i) {
   const c = state.cards.find((x) => x.id === state.openId);
   if (!c?.images?.length) return;
   lbTrack.innerHTML = c.images
-    .map((u) => `<div class="slide"><img ${photoSource(u)} alt="" draggable="false" referrerpolicy="no-referrer"></div>`)
+    .map((u) => `<div class="slide"><img ${photoSource(u)} alt="" draggable="false" decoding="async" referrerpolicy="no-referrer"></div>`)
     .join('');
   loadPrivatePhotos(lbTrack);
   Object.assign(lb, { index: Math.max(0, Math.min(i, c.images.length - 1)), n: c.images.length, s: 1, tx: 0, ty: 0, dx: 0, dy: 0 });
   lightbox.classList.remove('closing');
   openDialog(lightbox);
   nativeBars(true);
+  lbMeasure();
   lbRender(false);
 }
 
@@ -2603,11 +2679,11 @@ function nativeBars(dark) {
 }
 
 function closeLightboxAnimated() {
-  const h = lightbox.clientHeight || innerHeight;
+  const { H } = lbDims || lbMeasure();
   lightbox.classList.add('closing');
-  lb.dy = h;
+  lb.dy = H;
   lbRender(true);
-  setTimeout(() => lightbox.open && lightbox.close(), 240);
+  setTimeout(() => lightbox.open && lightbox.close(), 280);
 }
 
 function bindLightbox() {
@@ -2624,13 +2700,17 @@ function bindLightbox() {
       moved = true;
     } else if (p.length === 1) {
       const [a] = p;
-      g = { type: lb.s > 1.01 ? 'pan' : 'pending', x0: a.x, y0: a.y, tx0: lb.tx, ty0: lb.ty, t0: performance.now(), vx: 0, vy: 0, lx: a.x, ly: a.y, lt: performance.now() };
+      g = { type: lb.s > 1.01 ? 'pan' : 'pending', x0: a.x, y0: a.y, tx0: lb.tx, ty0: lb.ty, dx0: lb.dx, dy0: lb.dy, t0: performance.now(), vx: 0, vy: 0, lx: a.x, ly: a.y, lt: performance.now() };
     } else g = null;
   };
   lightbox.addEventListener('pointerdown', (e) => {
     if (e.target.closest('.lb-close') || lightbox.classList.contains('closing')) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    if (!ptrs.size) moved = false;
+    if (!ptrs.size) {
+      moved = false;
+      lbMeasure();
+      lbFreeze();
+    }
     ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
     begin();
   });
@@ -2651,7 +2731,7 @@ function bindLightbox() {
       lb.ty = m.y - by - (s / g.s0) * (g.m0.y - by - g.ty0);
       lb.s = s;
       g.mid = m;
-      return lbRender(false);
+      return lbQueue();
     }
     const dx = p.x - g.x0;
     const dy = p.y - g.y0;
@@ -2671,13 +2751,14 @@ function bindLightbox() {
       lb.tx = rubber(g.tx0 + dx, b.x);
       lb.ty = rubber(g.ty0 + dy, b.y);
     } else if (g.type === 'swipe') {
-      const edge = (lb.index === 0 && dx > 0) || (lb.index === lb.n - 1 && dx < 0);
-      lb.dx = edge ? dx / 3 : dx;
+      const x = g.dx0 + dx;
+      const edge = (lb.index === 0 && x > 0) || (lb.index === lb.n - 1 && x < 0);
+      lb.dx = edge ? x / 3 : x;
     } else if (g.type === 'down') {
-      lb.dy = Math.max(0, dy);
+      lb.dy = Math.max(0, g.dy0 + dy);
     } else return;
-    lbRender(false);
-  });
+    lbQueue();
+  }, { passive: true });
   const up = (e) => {
     if (!ptrs.has(e.pointerId)) return;
     const p = ptrs.get(e.pointerId);
@@ -2692,7 +2773,7 @@ function bindLightbox() {
     if (ptrs.size) return begin();
     g = null;
     if (!ended) return;
-    const W = lightbox.clientWidth || innerWidth;
+    const { W } = lbDims || lbMeasure();
     if (ended.type === 'swipe') {
       let i = lb.index;
       if (lb.dx < -W * 0.18 || ended.vx < -0.4) i++;
@@ -2706,6 +2787,12 @@ function bindLightbox() {
       return lbRender(true);
     }
     if (ended.type === 'pan') lbSettle();
+    // Палец лёг посреди анимации и ушёл без жеста — доводим до места
+    else if (lb.dx || lb.dy) {
+      lb.dx = 0;
+      lb.dy = 0;
+      lbRender(true);
+    }
     // Двойной тап: увеличить в точке касания в 2,5 раза или вернуть как было
     if (!moved && e.type === 'pointerup' && performance.now() - ended.t0 < 300) {
       const now = performance.now();
@@ -2722,31 +2809,36 @@ function bindLightbox() {
   lightbox.addEventListener('pointerup', up);
   lightbox.addEventListener('pointercancel', up);
   // Колесо мыши и щипок на тачпаде (ctrl + колесо) — зум вокруг курсора
+  let wheelAt = 0;
   lightbox.addEventListener('wheel', (e) => {
     e.preventDefault();
+    if (e.timeStamp - wheelAt > 300) lbMeasure();
+    wheelAt = e.timeStamp;
     const s = Math.min(LB_MAX, Math.max(1, lb.s * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0025))));
     lbZoomAt(s, e.clientX, e.clientY);
     if (s <= 1) Object.assign(lb, { tx: 0, ty: 0 });
     const b = lbBounds(lb.s);
     lb.tx = clampTo(lb.tx, b.x);
     lb.ty = clampTo(lb.ty, b.y);
-    lbRender(false);
+    lbQueue();
   }, { passive: false });
   // Тап по чёрному полю закрывает, если это был именно тап, а не жест
   lightbox.addEventListener('click', (e) => {
     if (moved) return (moved = false);
-    if (e.target === lightbox || e.target.classList.contains('slide')) lightbox.close();
+    if (e.target === lightbox || e.target === lbScrim || e.target.classList.contains('slide')) lightbox.close();
   });
   lightbox.addEventListener('close', () => {
     nativeBars(null);
     ptrs.clear();
     g = null;
-    lightbox.classList.remove('closing', 'zoomed');
-    lightbox.style.removeProperty('--drag');
+    if (lbRaf) (cancelAnimationFrame(lbRaf), (lbRaf = 0));
+    lightbox.classList.remove('closing', 'zoomed', 'moving');
+    for (const el of [lbScrim, $('.lb-close', lightbox), $('#lbCounter')]) el.style.removeProperty('opacity');
   });
   window.addEventListener('resize', () => {
     if (!lightbox.open) return;
     Object.assign(lb, { s: 1, tx: 0, ty: 0, dx: 0, dy: 0 });
+    lbMeasure();
     lbRender(false);
   });
 }
@@ -3132,7 +3224,7 @@ function bind() {
   for (const d of [addDialog, editDialog, settingsDialog, serverDialog, notifyDialog, $('#shareDialog'), $('#boardsDialog'), moveDialog, confirmBox])
     d.addEventListener('click', (e) => e.target === d && d.close());
   // Окно закрылось чем угодно (✕, Escape, тап мимо, отправка формы) — убираем его слой из истории «Назад»
-  for (const d of $$('dialog')) d.addEventListener('close', () => popLayer(d));
+  for (const d of $$('dialog')) d.addEventListener('close', () => (popLayer(d), syncModal()));
   confirmBox.addEventListener('close', onConfirmClose);
   moveDialog.addEventListener('close', () => showMoveNew(false));
   $('#moveForm').addEventListener('submit', (e) => {

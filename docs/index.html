@@ -12,7 +12,7 @@
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="styles.css?v=1.9.0">
+  <link rel="stylesheet" href="styles.css?v=1.10.0">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <script>
@@ -67,7 +67,7 @@
   </script>
   <script src="config.js"></script>
   <script src="product-import.js?v=2.3.1" defer></script>
-  <script src="app.js?v=1.11.0" defer></script>
+  <script src="app.js?v=1.12.0" defer></script>
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -204,6 +204,7 @@
 
   <!-- Полноэкранное фото -->
   <dialog class="lightbox" id="lightbox" aria-label="Фото">
+    <div class="lb-scrim" id="lbScrim"></div>
     <div class="lb-track" id="lbTrack"></div>
     <button type="button" class="icon-btn float-btn lb-close" data-action="lb-close" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button>
     <div class="lb-counter" id="lbCounter"></div>
