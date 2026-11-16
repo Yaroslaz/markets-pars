@@ -6,6 +6,7 @@
      от фона страницы, и многослойная тень — без обводок */
   --chrome: #ffffff;
   --chrome-shadow: 0 10px 28px rgba(24, 24, 48, 0.14), 0 3px 8px rgba(24, 24, 48, 0.08), 0 1px 2px rgba(24, 24, 48, 0.06);
+  --chrome-shadow-sm: 0 4px 12px rgba(24, 24, 48, 0.12), 0 1px 3px rgba(24, 24, 48, 0.08);
   --island: var(--chrome);
   --text: #16161a;
   --muted: #74747f;
@@ -44,6 +45,7 @@
     --surface-2: #26262d;
     --chrome: #2a2a31;
     --chrome-shadow: 0 14px 34px rgba(0, 0, 0, 0.62), 0 4px 10px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.4);
+    --chrome-shadow-sm: 0 5px 14px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.4);
     --island: var(--chrome);
     --text: #f2f2f5;
     --muted: #9a9aa6;
@@ -62,6 +64,7 @@
   --surface-2: #26262d;
   --chrome: #2a2a31;
   --chrome-shadow: 0 14px 34px rgba(0, 0, 0, 0.62), 0 4px 10px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --chrome-shadow-sm: 0 5px 14px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.4);
   --island: var(--chrome);
   --text: #f2f2f5;
   --muted: #9a9aa6;
@@ -87,7 +90,7 @@ body {
   min-height: 100dvh;
   overflow-x: hidden;
 }
-body:has(dialog[open]) { overflow: hidden; }
+.modal-open body { overflow: hidden; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 svg { width: 20px; height: 20px; flex: none; }
@@ -166,11 +169,11 @@ svg { width: 20px; height: 20px; flex: none; }
 .dd-menu {
   position: absolute; top: calc(100% + 8px); left: 0; z-index: 40; width: min(280px, calc(100vw - 20px)); padding: 6px;
   background: var(--chrome); border-radius: 16px; box-shadow: var(--chrome-shadow);
-  opacity: 0; transform: translateY(-4px) scale(.98); transform-origin: top left; pointer-events: none;
-  transition: opacity .15s ease, transform .15s ease;
+  visibility: hidden; transform: translateY(-4px) scale(.96); transform-origin: top left; pointer-events: none;
+  transition: transform .18s cubic-bezier(.2, .9, .3, 1), visibility 0s linear .18s;
   max-height: calc(100dvh - 90px); overflow: auto;
 }
-.dd.open .dd-menu { opacity: 1; transform: none; pointer-events: auto; }
+.dd.open .dd-menu { visibility: visible; transform: none; pointer-events: auto; transition: transform .2s cubic-bezier(.2, .9, .3, 1.1), visibility 0s; }
 .dd-group { padding: 8px 10px 4px; font-size: 12px; color: var(--muted); }
 .dd-sep { height: 1px; background: var(--line); margin: 6px 4px; }
 .dd-opt {
@@ -190,10 +193,12 @@ svg { width: 20px; height: 20px; flex: none; }
 main { padding: 0 calc(var(--safe-r) + 10px) calc(var(--dock-h) + var(--safe-b) + 12px) calc(var(--safe-l) + 10px); max-width: 1320px; margin: 0 auto; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .card {
+  contain: layout paint;
   background: var(--surface); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow);
   display: flex; flex-direction: column; cursor: pointer; position: relative; min-width: 0;
 }
-@keyframes pop { from { opacity: 0; transform: translateY(6px); } }
+/* Появление — только движением (без прозрачности: элементы не «исчезают» в анимации) */
+@keyframes pop { from { transform: translateY(8px) scale(.97); } }
 .card .photo { position: relative; aspect-ratio: 3 / 4; background: var(--surface-2); overflow: hidden; }
 .card .photo img:not(.fav) { width: 100%; height: 100%; object-fit: cover; display: block; }
 .card .photo .n {
@@ -284,12 +289,13 @@ main { padding: 0 calc(var(--safe-r) + 10px) calc(var(--dock-h) + var(--safe-b) 
 /* ---------- Нижний док: сумма, таб-бар, добавить ---------- */
 .dock {
   position: fixed; left: 50%; bottom: calc(var(--safe-b) + 10px); transform: translateX(-50%); z-index: 30;
-  width: min(360px, calc(100% - 20px)); display: flex; flex-direction: column; align-items: center; gap: 8px;
+  width: min(360px, calc(100% - 20px)); display: flex; flex-direction: column; align-items: center; gap: 10px;
   pointer-events: none;
 }
 .dock > * { pointer-events: auto; }
 /* Островок суммы — кнопка: открывает меню обновления. Появляется анимацией только из скрытого состояния */
 .sum-dd { max-width: 100%; animation: pop .2s ease both; }
+.sumbar.island { box-shadow: var(--chrome-shadow-sm); }
 .sumbar {
   display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border-radius: 18px; border: 0;
   font: inherit; font-size: 13px; color: var(--text); max-width: 100%; white-space: nowrap; --press: .96;
@@ -313,7 +319,7 @@ main { padding: 0 calc(var(--safe-r) + 10px) calc(var(--dock-h) + var(--safe-b) 
   transform: translate(-50%, 6px) scale(.98); transform-origin: 50% 100%;
 }
 .dd.open .dd-menu.up { transform: translate(-50%, 0); }
-.dock-row { display: flex; gap: 8px; width: 100%; }
+.dock-row { display: flex; gap: 8px; width: 100%; position: relative; z-index: 1; }
 .tabbar {
   flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); height: 54px; border-radius: 20px; padding: 0 4px; min-width: 0;
   --tab-bg: var(--surface);
@@ -350,15 +356,31 @@ main { padding: 0 calc(var(--safe-r) + 10px) calc(var(--dock-h) + var(--safe-b) 
 /* ---------- Диалоги ---------- */
 dialog { border: 0; padding: 0; color: var(--text); background: transparent; max-width: none; max-height: none; overflow: hidden; }
 dialog::backdrop { background: rgba(0, 0, 0, .5); }
-dialog[open] { animation: rise .25s cubic-bezier(.2, .9, .3, 1) both; }
-@keyframes rise { from { transform: translateY(24px); opacity: 0; } }
+/* Окна: двигается только содержимое (transform), гаснет и проявляется только затемнение (::backdrop).
+   Окна по центру слегка «вырастают», листы выезжают снизу, карточка товара — снизу на весь экран */
+dialog[open] { animation: dialog-in .26s cubic-bezier(.2, .9, .3, 1.15) both; }
+dialog[open]::backdrop { animation: fade .22s ease both; }
+@keyframes dialog-in { from { transform: scale(.96); } }
+@keyframes rise { from { transform: translateY(24px); } }
+@keyframes sheet-in { from { transform: translateY(100%); } }
+.sheet[open] { animation: sheet-in .3s cubic-bezier(.2, .9, .25, 1) both; }
+@media (min-width: 600px) { .sheet[open] { animation: rise .28s cubic-bezier(.2, .9, .3, 1.1) both; } }
 /* Карточка и лайтбокс на весь экран: без «вспышки» — карточка выезжает, почти не прозрачная; лайтбокс проявляется */
-.viewer[open] { animation: viewer-in .26s cubic-bezier(.2, .9, .3, 1) both; }
-@keyframes viewer-in { from { transform: translateY(32px); opacity: .5; } }
-.lightbox[open] { animation: fade .2s ease both; }
+.viewer[open] { animation: sheet-in .32s cubic-bezier(.2, .9, .25, 1) both; }
+@media (min-width: 900px) { .viewer[open] { animation: dialog-in .26s cubic-bezier(.2, .9, .3, 1.15) both; } }
+/* Лайтбокс: фото чуть «вырастает», чёрный фон (отдельный слой) проявляется */
+.lightbox[open] { animation: none; }
+.lightbox[open]::backdrop { animation: none; }
+.lightbox[open] .lb-scrim { animation: fade .2s ease both; }
+.lightbox[open] .lb-track { animation: lb-in .26s cubic-bezier(.2, .9, .3, 1.1) both; }
+@keyframes lb-in { from { scale: .94; } }
+@media (prefers-reduced-motion: reduce) {
+  dialog[open], .sheet[open], .viewer[open], .lightbox[open] .lb-track { animation: none; }
+}
 
 .sheet { width: 100%; margin: auto auto 0; }
 .sheet-inner {
+  contain: layout paint;
   background: var(--surface); border-radius: 22px 22px 0 0; padding: 12px 14px calc(14px + var(--safe-b));
   display: flex; flex-direction: column; gap: 12px; max-height: 92dvh; overflow: auto; overscroll-behavior: contain;
   scrollbar-width: none;
@@ -502,18 +524,22 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 /* ---------- Лайтбокс ---------- */
 .lightbox { width: 100%; height: 100%; margin: 0; }
 /* Листание, щипок и двойной тап — свои (app.js): браузер не масштабирует и не прокручивает страницу */
-.lightbox { touch-action: none; overscroll-behavior: contain; background: rgb(0 0 0 / calc(1 - var(--drag))); }
-.lightbox::backdrop { background: rgb(0 0 0 / calc(1 - var(--drag, 0))); }
-.lb-track { display: flex; height: 100dvh; touch-action: none; will-change: transform; }
+.lightbox { touch-action: none; overscroll-behavior: contain; background: transparent; }
+.lightbox::backdrop { background: transparent; }
+/* Чёрный фон — отдельный слой: при смахивании гаснет он, а не фото */
+.lb-scrim { position: fixed; inset: 0; background: #000; }
+.lb-track { position: relative; display: flex; height: 100dvh; touch-action: none; }
+/* Слои поднимаются на видеокарту только пока что-то движется */
+.lightbox.moving .lb-track, .lightbox.moving .lb-track img { will-change: transform; }
 .lb-track .slide { flex: 0 0 100%; height: 100%; position: relative; display: grid; place-items: center; overflow: hidden; }
 .lb-track img {
-  max-width: 100%; max-height: 100dvh; object-fit: contain; display: block; transform-origin: 0 0; will-change: transform;
+  max-width: 100%; max-height: 100dvh; object-fit: contain; display: block; transform-origin: 0 0;
   -webkit-user-select: none; user-select: none; -webkit-user-drag: none; -webkit-touch-callout: none;
 }
 .lightbox.zoomed .lb-track img { cursor: grab; }
 .lightbox.zoomed .lb-track img:active { cursor: grabbing; }
-.lb-close { position: fixed; top: calc(var(--safe-t) + 12px); right: calc(var(--safe-r) + 12px); opacity: calc(1 - var(--drag) * 2); }
-.lb-counter { position: fixed; bottom: calc(var(--safe-b) + 16px); left: 50%; transform: translateX(-50%); color: #fff; font-size: 13px; opacity: calc(.8 - var(--drag) * 2); pointer-events: none; text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+.lb-close { position: fixed; top: calc(var(--safe-t) + 12px); right: calc(var(--safe-r) + 12px); }
+.lb-counter { position: fixed; bottom: calc(var(--safe-b) + 16px); left: 50%; transform: translateX(-50%); color: #fff; font-size: 13px; opacity: .85; pointer-events: none; text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
 
 /* ---------- Подборки ---------- */
 .boards { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 50dvh; overflow: auto; }
@@ -627,18 +653,22 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 /* ---------- Тост ---------- */
 /* Длинный текст — в две строки, а не обрезается */
 /* От края до края экрана сразу под строкой состояния; текст с обычными внутренними отступами */
+/* Тост: сверху под строкой состояния (--safe-t учитывает и панели приложения), по ширине экрана
+   с небольшими равными полями, в одну строку (длинное — с многоточием, по высоте не обрезается).
+   Появляется и уходит сдвигом, без прозрачности; скрытый — за верхним краем и невидим (visibility) */
 .toast {
-  position: fixed; z-index: 100; inset: auto; width: auto; height: auto; border: 0; top: var(--safe-t);
-  left: 0; right: 0; max-width: none; margin: 0; transform: translateY(-12px);
-  background: var(--accent); color: var(--accent-text); border-radius: 0 0 14px 14px;
-  padding: 12px calc(var(--safe-r) + 16px) 12px calc(var(--safe-l) + 16px);
-  font-size: 14px; line-height: 1.35; font-weight: 500; text-align: center; text-wrap: balance;
-  display: block; overflow-wrap: anywhere;
-  opacity: 0; pointer-events: none; transition: opacity .25s ease, transform .25s ease; box-shadow: var(--shadow-lg);
+  position: fixed; z-index: 100; inset: auto; width: auto; height: auto; border: 0;
+  top: calc(var(--safe-t) + 8px); left: max(12px, var(--safe-l)); right: max(12px, var(--safe-r));
+  max-width: 620px; margin: 0 auto;
+  background: var(--accent); color: var(--accent-text); border-radius: 14px; padding: 11px 16px;
+  font-size: 14px; line-height: 20px; font-weight: 500; text-align: center; display: block;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .22), 0 2px 6px rgba(0, 0, 0, .12); pointer-events: none;
+  transform: translateY(calc(-100% - var(--safe-t) - 24px)); visibility: hidden;
+  transition: transform .28s cubic-bezier(.4, 0, .6, 1), visibility 0s linear .28s;
 }
-.toast.show { opacity: 1; transform: none; }
-.toast .tx { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-@media (max-width: 359px) { .toast { font-size: 13px; } }
+.toast.show { transform: none; visibility: visible; transition: transform .32s cubic-bezier(.2, .9, .3, 1.1), visibility 0s; }
+.toast .tx { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 380px) { .toast { font-size: 13.5px; padding: 10px 14px; } }
 
 /* ---------- Узкие экраны ---------- */
 @media (max-width: 359px) {
@@ -736,15 +766,16 @@ button, a, input, label, select, textarea, summary, .card, [role="button"] { tou
 .card.holding { scale: .95; --press-t: .41s; --press-ease: cubic-bezier(.33, 0, .67, 1); }
 /* Отмена прокруткой — быстрый возврат без отскока */
 .card.unhold { --press-t: .22s; --press-ease: cubic-bezier(.2, .6, .35, 1); }
-.card.leaving { opacity: 0; scale: .9; transition: opacity .18s ease, scale .2s ease; pointer-events: none; }
+/* Уход карточки — сжатие в точку, без прозрачности */
+.card.leaving { scale: 0; transition: scale .22s cubic-bezier(.5, 0, .75, 0); pointer-events: none; }
 .sel-ck {
   position: absolute; top: 8px; right: 8px; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
   border: 2px solid #fff; background: rgba(0, 0, 0, .28); color: transparent; pointer-events: none;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, .35); opacity: 0; scale: .5;
-  transition: opacity .15s ease, scale .28s var(--spring), background-color .15s ease, border-color .15s ease;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .35); visibility: hidden; scale: 0;
+  transition: scale .26s var(--spring), visibility 0s linear .26s, background-color .15s ease, border-color .15s ease;
 }
 .sel-ck svg { width: 16px; height: 16px; }
-body.selecting .sel-ck { opacity: 1; scale: 1; }
+body.selecting .sel-ck { visibility: visible; scale: 1; transition: scale .28s var(--spring), visibility 0s, background-color .15s ease, border-color .15s ease; }
 .card.selected .sel-ck { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .card.selected { box-shadow: 0 0 0 2.5px var(--accent), var(--shadow-lg); }
 .card.selected .photo::after { content: ''; position: absolute; inset: 0; background: color-mix(in srgb, var(--accent) 10%, transparent); pointer-events: none; }
@@ -776,8 +807,7 @@ body.selecting .dock-row { display: none; }
    Подтверждение
    ===================================================================== */
 .confirm { width: min(360px, calc(100% - 32px)); margin: auto; }
-.confirm[open] { animation: zoom-in .22s cubic-bezier(.2, .9, .3, 1.15) both; }
-@keyframes zoom-in { from { opacity: 0; scale: .92; } }
+.confirm[open] { animation: dialog-in .24s cubic-bezier(.2, .9, .3, 1.2) both; }
 .confirm-inner { background: var(--surface); border-radius: 22px; padding: 20px 16px 16px; box-shadow: var(--shadow-lg); display: flex; flex-direction: column; gap: 6px; text-align: center; }
 .confirm-inner h2 { margin: 0; font-size: 18px; font-family: var(--font-head); overflow-wrap: anywhere; }
 .confirm-inner p { margin: 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
@@ -791,14 +821,15 @@ body.selecting .dock-row { display: none; }
 /* Плавающие кнопки поверх фото — та же «хромовая» поверхность, почти сплошная, с глубокой тенью */
 .float-btn {
   width: 40px; height: 40px; border-radius: 50%; color: var(--text);
-  background: color-mix(in srgb, var(--chrome) 94%, transparent);
-  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-  box-shadow: var(--chrome-shadow);
+  /* без размытия под кнопкой: на движущемся слое оно очень дорогое для WebView */
+  background: var(--chrome); box-shadow: var(--chrome-shadow);
 }
 .float-btn svg { width: 20px; height: 20px; }
 .lb-close.float-btn { color: #fff; background: #2a2a31; box-shadow: 0 6px 18px rgba(0, 0, 0, .6); }
-@property --drag { syntax: '<number>'; inherits: true; initial-value: 0; }
-.viewer::backdrop { background: rgb(0 0 0 / calc(.5 - var(--drag, 0) * .5)); }
+/* Смахивание карточки: она едет за пальцем, затемнение гаснет только при закрытии */
+.viewer::backdrop { background: rgba(0, 0, 0, .5); transition: opacity .26s ease; }
+.viewer.closing::backdrop { opacity: 0; }
+.viewer.dragging, .viewer.closing { will-change: translate; }
 .viewer.dragging .viewer-inner { overflow: hidden; }
 @media (max-width: 899px) {
   .viewer-inner { transition: border-radius .2s ease; }
@@ -813,23 +844,23 @@ body.selecting .dock-row { display: none; }
   max-width: min(260px, calc(100vw - 16px)); padding: 6px 10px; border-radius: 9px;
   background: var(--accent); color: var(--accent-text); font-size: 12.5px; font-weight: 500; line-height: 1.3;
   box-shadow: 0 4px 16px rgba(0, 0, 0, .22); pointer-events: none; white-space: normal; text-align: center;
-  opacity: 0; scale: .92; transform-origin: var(--arrow-x, 50%) 100%; transition: opacity .12s ease, scale .14s ease;
+  visibility: hidden; scale: .9; transform-origin: var(--arrow-x, 50%) 100%; transition: scale .14s ease, visibility 0s linear .14s;
 }
 .tip.below { transform-origin: var(--arrow-x, 50%) 0; }
-.tip.show { opacity: 1; scale: 1; }
+.tip.show { visibility: visible; scale: 1; transition: scale .16s cubic-bezier(.2, .9, .3, 1.2), visibility 0s; }
 .tip::after {
   content: ''; position: absolute; left: var(--arrow-x, 50%); bottom: -4px; width: 9px; height: 9px; margin-left: -4.5px;
   background: inherit; transform: rotate(45deg); border-radius: 0 0 2px 0;
 }
 .tip.below::after { bottom: auto; top: -4px; border-radius: 2px 0 0 0; }
-@media (prefers-reduced-motion: reduce) { .tip { transition: opacity .12s ease; scale: 1; } }
+@media (prefers-reduced-motion: reduce) { .tip { transition: none; scale: 1; } }
 
 /* =====================================================================
    Вход
    ===================================================================== */
 .gate { width: 100%; height: 100%; margin: 0; overflow: auto; background: var(--bg); }
 .gate::backdrop { background: var(--bg); }
-.gate[open] { display: grid; place-items: center; padding: calc(var(--safe-t) + 20px) calc(var(--safe-r) + 16px) calc(var(--safe-b) + 20px) calc(var(--safe-l) + 16px); animation: fade .3s ease both; }
+.gate[open] { display: grid; place-items: center; padding: calc(var(--safe-t) + 20px) calc(var(--safe-r) + 16px) calc(var(--safe-b) + 20px) calc(var(--safe-l) + 16px); animation: none; }
 .gate[open]::before {
   content: ''; position: fixed; inset: 0; pointer-events: none;
   background: radial-gradient(60% 40% at 30% 10%, rgba(93, 140, 255, .16), transparent 70%), radial-gradient(60% 40% at 80% 90%, rgba(255, 79, 154, .14), transparent 70%);
@@ -864,7 +895,7 @@ body.selecting .dock-row { display: none; }
 
 /* ===== Детали товара в открытой карточке: варианты, описание, характеристики, отзывы ===== */
 .price-alt { margin-top: -2px; font-size: 13px; color: var(--muted); }
-.details { display: grid; gap: 18px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.details { display: grid; gap: 18px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); content-visibility: auto; contain-intrinsic-size: auto 600px; }
 .detail h3 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; font: 600 15px/1.3 var(--font-head); }
 .detail h3 span { font: 400 13px var(--font); color: var(--muted); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
