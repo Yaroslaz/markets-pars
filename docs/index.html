@@ -12,7 +12,7 @@
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="styles.css?v=1.11.0">
+  <link rel="stylesheet" href="styles.css?v=1.12.0">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <script>
@@ -67,7 +67,7 @@
   </script>
   <script src="config.js"></script>
   <script src="product-import.js?v=2.4.2" defer></script>
-  <script src="app.js?v=1.13.1" defer></script>
+  <script src="app.js?v=1.14.0" defer></script>
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -115,6 +115,7 @@
     <symbol id="i-eye" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></g></symbol>
     <symbol id="i-eye-off" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.6 5.6A9.6 9.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-2.6 3.4M6.6 6.7C3.9 8.4 2.5 12 2.5 12S6 18.5 12 18.5c1.9 0 3.5-.6 4.9-1.5"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M3.5 3.5l17 17"/></g></symbol>
     <symbol id="i-bell" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 21h4"/></g></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.3 3.5 5.2 3.5 8.5s-1.1 6.2-3.5 8.5c-2.4-2.3-3.5-5.2-3.5-8.5s1.1-6.2 3.5-8.5z"/></g></symbol>
     <symbol id="i-image"viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></g></symbol>
   </svg>
 
@@ -271,6 +272,11 @@
         <span class="ic"><svg><use href="#i-bell"/></svg></span><span class="lbl">Уведомления</span>
         <span class="hint" id="notifyHint"><i class="dot"></i><span class="v"></span></span><svg class="go"><use href="#i-right"/></svg>
       </button>
+      <!-- Сеть: только в приложении для Android — обход блокировок и проверка связи -->
+      <button type="button" class="server-row net-row" data-action="net" aria-describedby="netHint" id="netRow" hidden>
+        <span class="ic"><svg><use href="#i-globe"/></svg></span><span class="lbl">Сеть</span>
+        <span class="hint" id="netHint"><i class="dot"></i><span class="v"></span></span><svg class="go"><use href="#i-right"/></svg>
+      </button>
     </form>
   </dialog>
 
@@ -305,6 +311,31 @@
           <label class="field"><span>До</span><input type="time" name="to" value="08:00" required></label>
         </div>
       </fieldset>
+    </form>
+  </dialog>
+
+  <!-- Сеть (приложение для Android): обход блокировок и проверка связи -->
+  <dialog class="sheet" id="netDialog" aria-labelledby="netTitle">
+    <form method="dialog" class="sheet-inner" tabindex="-1" autofocus id="netForm" autocomplete="off">
+      <div class="sheet-head">
+        <h2 id="netTitle">Сеть</h2>
+        <button type="button" class="icon-btn ghost" data-action="close-dialog" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button>
+      </div>
+      <div class="field"><span id="netModeLabel">Обход блокировок</span>
+        <div class="theme-switch net-switch" id="netSwitch" role="radiogroup" aria-labelledby="netModeLabel">
+          <button type="button" role="radio" data-net-mode="auto"><span>Авто</span></button>
+          <button type="button" role="radio" data-net-mode="always"><span>Всегда</span></button>
+          <button type="button" role="radio" data-net-mode="off"><span>Выключен</span></button>
+        </div>
+      </div>
+      <p class="hint" id="netStatus" role="status" aria-live="polite"></p>
+      <div class="row">
+        <button type="button" class="btn grow" data-action="net-check" id="netCheck"><svg><use href="#i-refresh"/></svg><span>Проверка связи</span></button>
+      </div>
+      <ul class="progress net-results" id="netResults" hidden></ul>
+      <div class="row" id="netReportRow" hidden>
+        <button type="button" class="btn grow" data-action="net-copy"><svg><use href="#i-copy"/></svg><span>Скопировать отчёт</span></button>
+      </div>
     </form>
   </dialog>
 

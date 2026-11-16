@@ -56,6 +56,8 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         siteUri = Uri.parse(getString(R.string.site_url));
+        // Обход блокировок (прокси для AliExpress и сервера) — до того, как WebView начнут грузить страницы
+        NetBypass.apply(this, null);
 
         FrameLayout root = new FrameLayout(this);
         // Скрытый браузер лежит под сайтом: он «видим» для системы и нормально выполняет JS страницы,
@@ -122,6 +124,7 @@ public class MainActivity extends Activity {
                         if (data.startsWith("{\"type\":\"theme\"") || data.startsWith("{\"type\":\"bars\"")) onLookMessage(data);
                         else if (data.startsWith("{\"type\":\"clipboard\"")) reply.postMessage(clipboardReply(data));
                         else if (data.startsWith("{\"type\":\"notify-")) onNotifyMessage(data, reply);
+                        else if (data.startsWith("{\"type\":\"bypass")) NetBypass.handle(this, data, reply);
                         else reader.handle(data, reply);
                     });
         }

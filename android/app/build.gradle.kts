@@ -29,4 +29,7 @@ android {
 
 dependencies {
     implementation("androidx.webkit:webkit:1.14.0")
+    // JVM-тест разбиения ClientHello (Desync) и разбора DNS (DnsWire): ./gradlew testDebugUnitTest
+    // (на Windows из пути с кириллицей процесс тестов не находит классы — запускать из пути латиницей, например через junction)
+    testImplementation("junit:junit:4.13.2")
 }
