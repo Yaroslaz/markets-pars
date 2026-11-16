@@ -178,6 +178,7 @@ async function api(path, opts = {}) {
     body: opts.file ? await opts.file.arrayBuffer() : opts.body ? JSON.stringify(opts.body) : undefined,
     redirect: 'error',
     cache: 'no-store',
+    signal: opts.timeout && AbortSignal.timeout ? AbortSignal.timeout(opts.timeout) : undefined,
   });
   if (base !== state.api || (!opts.public && token !== state.accessToken)) {
     throw new Error('Подключение изменилось');
@@ -298,7 +299,17 @@ const nativeApp = (() => {
 async function importViaApp(board, url, source, cardId) {
   if (!nativeApp || !nativeSources.has(source)) return null;
   try {
+    // Короткую ссылку сначала раскрывает сервер: некоторые короткие домены (ali.click) у провайдеров
+    // телефона не открываются, а сам товар на aliexpress.ru открывается
+    try {
+      if (!/:\d+$/.test(productKey(source, new URL(url)) || '')) {
+        const { url: full } = await api('/api/resolve', { method: 'POST', body: { url }, timeout: 8000 });
+        if (full && /:\d+$/.test(productKey(source, new URL(full)) || '')) url = full;
+      }
+    } catch {}
     const r = await nativeApp.read(url);
+    if (r?.error === 'cancelled') return { cancelled: true };
+    if (r?.error === 'network') return { failed: 'network' };
     const data = r?.ok ? r.data : null;
     if (!data?.url || (!data.title && data.price == null && !data.images?.length)) {
       // Страницу прочитать не дали, но телефон уже раскрыл короткую ссылку до адреса товара —
@@ -767,6 +778,7 @@ async function refreshCards(ids, { onlyMissing = false } = {}) {
   const board = state.board;
   const run = (state.bulkRefresh = { done: 0, total: ids.length, stop: false });
   let good = 0;
+  const unreachable = new Set(); // магазины, страницы которых не открылись
   updateSum();
   for (const id of ids) {
     if (run.stop || state.board !== board || !state.unlocked) break;
@@ -775,6 +787,13 @@ async function refreshCards(ids, { onlyMissing = false } = {}) {
       const viaApp = !!nativeApp && nativeSources.has(c.source);
       try {
         const viaPhone = await importViaApp(board, c.url, c.source, id);
+        // «Отмена» на странице магазина останавливает всё обновление, а не только этот товар
+        if (viaPhone?.cancelled) {
+          run.stop = true;
+          run.cancelled = true;
+          break;
+        }
+        if (viaPhone?.failed) unreachable.add(SOURCES[c.source].name);
         const r = viaPhone?.card ? viaPhone : await api(`/api/cards/${id}/refresh`, { method: 'POST', body: {} });
         if (state.board === board) {
           upsertCard(r.card);
@@ -789,8 +808,10 @@ async function refreshCards(ids, { onlyMissing = false } = {}) {
   }
   state.bulkRefresh = null;
   render();
-  if (onlyMissing) toast(good ? `Дополнено ${good} из ${run.done}` : 'Новых данных не нашлось');
-  else toast(run.stop ? `Остановлено: обновлено ${good} из ${run.total}` : `Обновлено ${good} из ${run.done}`);
+  const why = unreachable.size ? ` — не открывается ${[...unreachable].join(', ')}` : '';
+  if (run.cancelled) toast(`Отменено: обновлено ${good} из ${run.total}`);
+  else if (onlyMissing) toast(good ? `Дополнено ${good} из ${run.done}${why}` : `Не удалось получить данные${why || ' — магазин их не отдаёт'}`);
+  else toast(run.stop ? `Остановлено: обновлено ${good} из ${run.total}` : `Обновлено ${good} из ${run.done}${why}`);
 }
 
 // «Обновить без данных»: только товары на экране без цены или фото

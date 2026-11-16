@@ -95,6 +95,19 @@ function needsResolve(url, source) {
   return false;
 }
 
+/**
+ * Раскрывает короткую ссылку (ali.click, ozon.ru/t, market.yandex.ru/cc…) до адреса товара — только редиректы,
+ * без загрузки страницы. Приложению на телефоне некоторые короткие домены недоступны (ali.click), поэтому
+ * сайт сначала просит раскрыть ссылку сервер. Если не вышло, возвращает исходную ссылку.
+ */
+export async function resolveLink(inputUrl) {
+  const source = detectSource(inputUrl);
+  if (!source || !needsResolve(inputUrl, source)) return inputUrl;
+  const url = await resolveRedirects(inputUrl, source);
+  const resolved = detectSource(url);
+  return resolved && !needsResolve(url, resolved) ? url : inputUrl;
+}
+
 export async function parseProduct(inputUrl, shareText) {
   let source = detectSource(inputUrl);
   if (!source) throw new HttpError(400, 'Ссылка не похожа на Ozon, Wildberries, Яндекс Маркет или AliExpress');

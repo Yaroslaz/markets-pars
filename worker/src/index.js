@@ -1,4 +1,4 @@
-import { parseProduct, productFromBrowser, mergeBrowserProduct, extractUrls, HttpError } from './parsers.js';
+import { parseProduct, resolveLink, productFromBrowser, mergeBrowserProduct, extractUrls, HttpError } from './parsers.js';
 import { accessConfig, requireSession, signIn } from './access.js';
 
 const VERSION = '1.5.0';
@@ -114,6 +114,10 @@ async function route(request, env, ctx) {
   if (path === '/api/cards/import' && method === 'POST') return addCard(env, await body(request), true);
   if (path === '/api/cards/move' && method === 'POST') return moveCards(env, await body(request));
   if (path === '/api/cards/delete' && method === 'POST') return deleteCards(env, await body(request));
+  if (path === '/api/resolve' && method === 'POST') {
+    const { url: link } = await body(request);
+    return json({ url: await resolveLink(firstUrl(link)) });
+  }
   if (path === '/api/parse' && method === 'POST') {
     const { url: link, shareText } = await body(request);
     return json({ product: await parseProduct(firstUrl(link), shareText ?? link) });

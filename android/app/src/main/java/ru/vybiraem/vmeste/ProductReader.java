@@ -102,7 +102,7 @@ final class ProductReader {
         Button cancel = new Button(activity, null, android.R.attr.borderlessButtonStyle);
         cancel.setText(R.string.check_cancel);
         cancel.setTextColor(ColorStateList.valueOf(activity.getColor(R.color.page_text)));
-        cancel.setOnClickListener(v -> cancelCurrent());
+        cancel.setOnClickListener(v -> cancelAll());
         bar.addView(cancel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         layer.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -135,6 +135,19 @@ final class ProductReader {
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 if (current != null && url != null && url.startsWith("http")) current.navigated = true;
+            }
+
+            // Сайт магазина не открылся (нет связи, домен недоступен у провайдера) — сдаёмся сразу,
+            // а не ждём 15 секунд, чтобы потом показать пустую страницу ошибки
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, android.webkit.WebResourceError err) {
+                if (current == null || !request.isForMainFrame()) return;
+                int code = err.getErrorCode();
+                if (code == ERROR_UNSUPPORTED_SCHEME) return;
+                Job job = current;
+                handler.post(() -> {
+                    if (job == current) finish(job, error(job.id, "network"));
+                });
             }
         });
     }
@@ -181,8 +194,15 @@ final class ProductReader {
         else hide();
     }
 
+    /** «Отмена» и «Назад» отменяют всю очередь: каждому заданию отвечаем, чтобы сайт не ждал. */
     void cancelAll() {
-        queue.clear();
+        Job job;
+        while ((job = queue.poll()) != null) {
+            try {
+                job.reply.postMessage(error(job.id, "cancelled").toString());
+            } catch (RuntimeException ignored) {
+            }
+        }
         cancelCurrent();
     }
 

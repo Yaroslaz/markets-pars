@@ -172,7 +172,7 @@ public class MainActivity extends Activity {
      */
     private void handleBack() {
         if (reader.isShowing()) {
-            reader.cancelCurrent();
+            reader.cancelAll();
             return;
         }
         site.evaluateJavascript(
