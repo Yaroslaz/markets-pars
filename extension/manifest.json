@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Выбираем вместе",
   "short_name": "Вместе",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Добавляет товары Ozon, Яндекс Маркета, Wildberries и AliExpress в подборку «Выбираем вместе»: страница товара читается прямо в вашем браузере.",
   "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
   "action": {

@@ -158,6 +158,37 @@ function readOpenProduct() {
     shown = { price: current.value, oldPrice: old > current.value ? old : null, noCard: wb && Number.isFinite(other) ? other : null };
     break;
   }
+  // Блок цены не нашёлся (AliExpress часто меняет имена классов) — ищем цену так, как её видит человек:
+  // самая крупная сумма в рублях в верхней части страницы. Цены в ссылках на другие товары
+  // («похожие», «смотрите также») не считаем; зачёркнутая сумма рядом — старая цена.
+  if (!shown && (ali || !product)) {
+    const pricePattern = /^(?:от\s*)?\d[\d\s]*(?:[.,]\d{1,2})?\s*₽$/i;
+    const limit = Math.max(innerHeight, 700) * 1.8;
+    const found = [];
+    const nodes = document.body ? document.body.querySelectorAll('span, div, p, b, strong, ins, del, s, bdi') : [];
+    for (let i = 0; i < nodes.length && i < 6000 && found.length < 80; i++) {
+      const el = nodes[i];
+      const raw = textOf(el).trim();
+      if (raw.length > 24 || !pricePattern.test(raw)) continue;
+      if (Array.from(el.children).some((child) => pricePattern.test(textOf(child).trim()))) continue;
+      if (el.closest('a[href*="/item/"], a[href*="/product/"], header, nav, footer, [class*="recommend" i], [class*="similar" i]')) continue;
+      const rect = el.getBoundingClientRect();
+      if (!rect.width || !rect.height || rect.top + scrollY > limit) continue;
+      const value = rubles(raw.replace(/^от\s*/i, ''), '');
+      if (value === null || value <= 0) continue;
+      let crossed = struck(el, document.body);
+      for (let inner = el; !crossed && inner && inner !== document.body; inner = inner.parentElement) crossed = strikeLine(inner);
+      found.push({ el, value, crossed, size: parseFloat(getComputedStyle(el).fontSize) || 0 });
+    }
+    const main = found.filter((item) => !item.crossed).sort((a, b) => b.size - a.size || a.el.getBoundingClientRect().top - b.el.getBoundingClientRect().top)[0];
+    if (main) {
+      // Старая цена — зачёркнутая сумма в том же блоке (до 4 уровней вверх от главной)
+      let box = main.el;
+      for (let up = 0; up < 4 && box.parentElement; up++) box = box.parentElement;
+      const old = Math.max(0, ...found.filter((item) => item.crossed && box.contains(item.el)).map((item) => item.value));
+      shown = { price: main.value, oldPrice: old > main.value ? old : null, noCard: null };
+    }
+  }
   const webPrice = ozonState('webPrice');
   const mobilePrice = [].concat(ozonState('webMobPriceCompact')?.mainPrice?.price || []);
   const statePrice = webPrice ? {
