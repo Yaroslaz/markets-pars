@@ -21,6 +21,7 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
+import androidx.webkit.JavaScriptReplyProxy;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
@@ -33,6 +34,9 @@ import java.util.Collections;
  */
 public class MainActivity extends Activity {
     private static final int FILE_REQUEST = 1;
+    private static final int NOTIFY_REQUEST = 2;
+    /** Приложение на экране: фоновая проверка тогда не показывает уведомления — сайт и так всё показывает. */
+    static volatile boolean visible;
 
     private WebView site;
     private ProductReader reader;
@@ -43,6 +47,9 @@ public class MainActivity extends Activity {
     private boolean themeDark;
     /** Тёмный слой на сайте (галерея) переопределяет цвет значков панелей; null — как у темы. */
     private Boolean barsDark;
+    /** Ответ сайту на просьбу разрешить уведомления: придёт после системного диалога. */
+    private JavaScriptReplyProxy permissionReply;
+    private int permissionId;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -114,6 +121,7 @@ public class MainActivity extends Activity {
                         if (!isMainFrame || data == null) return;
                         if (data.startsWith("{\"type\":\"theme\"") || data.startsWith("{\"type\":\"bars\"")) onLookMessage(data);
                         else if (data.startsWith("{\"type\":\"clipboard\"")) reply.postMessage(clipboardReply(data));
+                        else if (data.startsWith("{\"type\":\"notify-")) onNotifyMessage(data, reply);
                         else reader.handle(data, reply);
                     });
         }
@@ -125,8 +133,27 @@ public class MainActivity extends Activity {
         }
 
         String shared = sharedText(getIntent());
-        if (savedInstanceState == null || shared != null) site.loadUrl(siteUrl(shared));
+        String card = cardUrl(getIntent());
+        if (card != null) site.loadUrl(card);
+        else if (savedInstanceState == null || shared != null) site.loadUrl(siteUrl(shared));
         else site.restoreState(savedInstanceState);
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        visible = true;
+        // Пока приложение открыто, новое видно на сайте: проверка только отмечает события как увиденные
+        Notifier.schedule(this);
+        Notifier.checkSoon(this, true);
+    }
+
+    @Override
+    protected void onStop() {
+        visible = false;
+        // Ушли в фон: всё, что было до этого момента, человек уже видел; дальше — уведомления
+        Notifier.checkSoon(this, true);
+        super.onStop();
     }
 
     @Override
@@ -137,7 +164,93 @@ public class MainActivity extends Activity {
         if (shared != null) {
             reader.cancelAll();
             site.loadUrl(siteUrl(shared));
+            return;
         }
+        String card = cardUrl(intent);
+        if (card != null) {
+            // Нажали уведомление: открытый сайт сам переключит подборку и откроет карточку, иначе — загрузка по адресу
+            String board = intent.getStringExtra(Notifier.EXTRA_BOARD);
+            String id = intent.getStringExtra(Notifier.EXTRA_CARD);
+            String js = "(function(){try{return !!(window.mpOpenCard&&window.mpOpenCard(" + org.json.JSONObject.quote(board == null ? "" : board)
+                    + "," + org.json.JSONObject.quote(id == null ? "" : id) + "))}catch(e){return false}})()";
+            reader.cancelCurrent();
+            site.evaluateJavascript(js, opened -> {
+                if (!"true".equals(opened)) site.loadUrl(card);
+            });
+        }
+    }
+
+    /** Адрес сайта для нажатого уведомления: ?b=<подборка>#card=<карточка>. */
+    private String cardUrl(Intent intent) {
+        if (intent == null || !Notifier.ACTION_OPEN.equals(intent.getAction())) return null;
+        String board = intent.getStringExtra(Notifier.EXTRA_BOARD);
+        String card = intent.getStringExtra(Notifier.EXTRA_CARD);
+        Uri.Builder b = siteUri.buildUpon();
+        if (board != null && board.matches("[\\w-]{1,40}")) b.appendQueryParameter("b", board);
+        if (card != null && card.matches("[\\w-]{1,40}")) b.encodedFragment("card=" + card);
+        return b.build().toString();
+    }
+
+    /**
+     * Уведомления: сайт сообщает настройки и просит разрешение.
+     * notify-hello — есть ли уведомления в приложении; notify-config — сервер, вход, роль, настройки;
+     * notify-permission — запросить разрешение (Android 13+); notify-settings — открыть настройки уведомлений.
+     */
+    private void onNotifyMessage(String data, JavaScriptReplyProxy reply) {
+        org.json.JSONObject msg;
+        try {
+            msg = new org.json.JSONObject(data);
+        } catch (org.json.JSONException e) {
+            return;
+        }
+        int id = msg.optInt("id");
+        switch (msg.optString("type")) {
+            case "notify-config":
+                Notifier.saveConfig(this, msg);
+                Notifier.ensureChannels(this);
+                Notifier.checkSoon(this, true);
+                reply.postMessage(notifyReply(id));
+                break;
+            case "notify-permission":
+                if (Build.VERSION.SDK_INT >= 33
+                        && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    if (permissionReply != null) permissionReply.postMessage(notifyReply(permissionId));
+                    permissionReply = reply;
+                    permissionId = id;
+                    requestPermissions(new String[] { android.Manifest.permission.POST_NOTIFICATIONS }, NOTIFY_REQUEST);
+                } else {
+                    reply.postMessage(notifyReply(id));
+                }
+                break;
+            case "notify-settings":
+                try {
+                    startActivity(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                            .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName()));
+                } catch (ActivityNotFoundException ignored) {
+                }
+                reply.postMessage(notifyReply(id));
+                break;
+            default: // notify-hello
+                reply.postMessage(notifyReply(id));
+        }
+    }
+
+    private String notifyReply(int id) {
+        android.app.NotificationManager nm = getSystemService(android.app.NotificationManager.class);
+        org.json.JSONObject out = new org.json.JSONObject();
+        try {
+            out.put("id", id).put("ok", true).put("granted", nm != null && nm.areNotificationsEnabled());
+        } catch (org.json.JSONException ignored) {
+        }
+        return out.toString();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != NOTIFY_REQUEST || permissionReply == null) return;
+        permissionReply.postMessage(notifyReply(permissionId));
+        permissionReply = null;
     }
 
     @Override

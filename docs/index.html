@@ -12,7 +12,7 @@
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="styles.css?v=1.8.0">
+  <link rel="stylesheet" href="styles.css?v=1.9.0">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <script>
@@ -67,7 +67,7 @@
   </script>
   <script src="config.js"></script>
   <script src="product-import.js?v=2.2.0" defer></script>
-  <script src="app.js?v=1.9.0" defer></script>
+  <script src="app.js?v=1.10.0" defer></script>
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -114,7 +114,8 @@
     <symbol id="i-select-all" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="M8 12.2l2.8 2.8L16.2 9.5"/></g></symbol>
     <symbol id="i-eye" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></g></symbol>
     <symbol id="i-eye-off" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.6 5.6A9.6 9.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-2.6 3.4M6.6 6.7C3.9 8.4 2.5 12 2.5 12S6 18.5 12 18.5c1.9 0 3.5-.6 4.9-1.5"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M3.5 3.5l17 17"/></g></symbol>
-    <symbol id="i-image" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></g></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 21h4"/></g></symbol>
+    <symbol id="i-image"viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></g></symbol>
   </svg>
 
   <div class="topdock" id="toolbar">
@@ -264,6 +265,45 @@
         <span class="ic"><svg><use href="#i-cloud"/></svg></span><span class="lbl">Сервер</span>
         <span class="hint" id="serverHint"><i class="dot"></i><span class="v"></span></span><svg class="go"><use href="#i-right"/></svg>
       </button>
+      <!-- Уведомления: свои на каждом устройстве, настраиваются в отдельном окне -->
+      <button type="button" class="server-row notify-row" data-action="notify" aria-describedby="notifyHint">
+        <span class="ic"><svg><use href="#i-bell"/></svg></span><span class="lbl">Уведомления</span>
+        <span class="hint" id="notifyHint"><i class="dot"></i><span class="v"></span></span><svg class="go"><use href="#i-right"/></svg>
+      </button>
+    </form>
+  </dialog>
+
+  <!-- Уведомления -->
+  <dialog class="sheet" id="notifyDialog" aria-labelledby="notifyTitle">
+    <form method="dialog" class="sheet-inner" tabindex="-1" autofocus id="notifyForm" autocomplete="off">
+      <div class="sheet-head">
+        <h2 id="notifyTitle">Уведомления</h2>
+        <button type="button" class="icon-btn ghost" data-action="close-dialog" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button>
+      </div>
+      <label class="tgl master">
+        <span class="txt"><b>Присылать уведомления</b><small id="notifyStatus" role="status" aria-live="polite"></small></span>
+        <input type="checkbox" name="on" role="switch"><i class="sw" aria-hidden="true"></i>
+      </label>
+      <p class="hint notify-help" id="notifyHelp" hidden></p>
+      <div class="row" id="notifyFix" hidden>
+        <button type="button" class="btn" data-action="notify-allow" id="notifyAllow" hidden>Разрешить уведомления</button>
+        <button type="button" class="btn" data-action="notify-os-settings" id="notifyOs" hidden>Открыть настройки уведомлений</button>
+      </div>
+      <fieldset class="tgl-group" id="notifyKinds">
+        <legend class="visually-hidden">Какие уведомления присылать</legend>
+        <label class="tgl"><span class="txt">Лайки второго<small id="notifyLikesHint">Когда второй ставит сердце</small></span><input type="checkbox" name="likes" role="switch"><i class="sw" aria-hidden="true"></i></label>
+        <label class="tgl"><span class="txt">Совпадения (нравится обоим)</span><input type="checkbox" name="matches" role="switch"><i class="sw" aria-hidden="true"></i></label>
+        <label class="tgl"><span class="txt">Новые товары</span><input type="checkbox" name="adds" role="switch"><i class="sw" aria-hidden="true"></i></label>
+        <label class="tgl"><span class="txt">Новые подборки</span><input type="checkbox" name="boards" role="switch"><i class="sw" aria-hidden="true"></i></label>
+      </fieldset>
+      <fieldset class="tgl-group" id="notifyQuiet">
+        <legend class="visually-hidden">Тихие часы</legend>
+        <label class="tgl"><span class="txt">Тихие часы<small>Ночью уведомления приходят без звука</small></span><input type="checkbox" name="quiet" role="switch"><i class="sw" aria-hidden="true"></i></label>
+        <div class="quiet-times" id="quietTimes">
+          <label class="field"><span>С</span><input type="time" name="from" value="23:00" required></label>
+          <label class="field"><span>До</span><input type="time" name="to" value="08:00" required></label>
+        </div>
+      </fieldset>
     </form>
   </dialog>
 
