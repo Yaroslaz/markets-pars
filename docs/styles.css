@@ -924,3 +924,16 @@ a.chip:active { scale: .96; }
 .review .rate svg { width: 14px; height: 14px; color: var(--star); }
 .review b { font-weight: 600; }
 .review p { margin: 6px 0 0; line-height: 1.45; overflow-wrap: anywhere; }
+
+/* ===== Закрытие окон с анимацией (класс is-closing ставит app.js, затем окно закрывается) =====
+   Содержимое не становится прозрачным: листы и карточка уезжают вниз, окна по центру уходят за нижний край;
+   гаснет только затемнение. Селекторы с [open] — чтобы перебить анимации появления */
+dialog[open].is-closing { pointer-events: none; animation: dialog-out .24s cubic-bezier(.5, 0, .75, 0) forwards; }
+dialog[open].is-closing::backdrop { animation: fade-out .24s ease forwards; }
+.sheet[open].is-closing, .viewer[open].is-closing { animation: sheet-out .26s cubic-bezier(.4, 0, 1, 1) forwards; }
+@media (min-width: 600px) { .sheet[open].is-closing { animation: dialog-out .24s cubic-bezier(.5, 0, .75, 0) forwards; } }
+@media (min-width: 900px) { .viewer[open].is-closing { animation: dialog-out .24s cubic-bezier(.5, 0, .75, 0) forwards; } }
+@keyframes sheet-out { to { transform: translateY(100%); } }
+@keyframes dialog-out { to { transform: translateY(calc(50vh + 60%)); } }
+@keyframes fade-out { to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { dialog[open].is-closing, dialog[open].is-closing::backdrop { animation: none; } }

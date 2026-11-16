@@ -202,6 +202,8 @@ async function readInFrame(job) {
       if (state.finished || !/^https:\/\//.test(href)) return;
       const now = Date.now();
       const status = result?.status || 'wait';
+      // Товара больше нет — открывать окно бессмысленно
+      if (status === 'gone') return end({ ok: false, error: 'gone', url: href });
       if (status === 'ok' && result.complete) {
         if (!completeAt) completeAt = now;
         partial = result;
@@ -278,6 +280,7 @@ async function readInWindow(job) {
         // страница ещё грузится или идёт редирект через чужой домен
       }
       const status = result?.status || 'wait';
+      if (status === 'gone') return fail('gone');
 
       if (status === 'ok') {
         if (result.complete) return { ok: true, data: result };

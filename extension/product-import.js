@@ -7,17 +7,30 @@
 function readOpenProduct() {
   const url = new URL(location.href);
   const text = (document.body?.innerText || '').slice(0, 4000);
+  // Элементы проверки считаем, только если их видно: AliExpress держит скрытые заготовки слайдера
+  // (.baxia-dialog, #nc_1_n1z) на обычных страницах товара — из-за них страница навсегда казалась «проверкой»
+  const shownOnScreen = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity) > 0.05;
+  };
   const blocked =
     /showcaptcha|\/captcha|\/punish|_____tmd_____|\/abt\//i.test(url.pathname + url.search) ||
-    !!document.querySelector(
-      'iframe[src*="captcha" i], .nc_wrapper, #nc_1_n1z, .baxia-dialog, [class*="smart-captcha" i], form[action*="checkcaptcha" i], ' +
-      // Проверка браузера Wildberries («Проверяем браузер»): обычно проходит сама за секунду
-      'link[href*="/__wbaas/challenges/" i], #s-key[data-site-key]'
-    ) ||
+    Array.from(document.querySelectorAll(
+      'iframe[src*="captcha" i], .nc_wrapper, #nc_1_n1z, .baxia-dialog, [class*="smart-captcha" i], form[action*="checkcaptcha" i], #s-key[data-site-key]'
+    )).some(shownOnScreen) ||
+    // Проверка браузера Wildberries («Проверяем браузер»): обычно проходит сама за секунду
+    !!document.querySelector('link[href*="/__wbaas/challenges/" i]') ||
     // Последняя пара — страница Ozon при блокировке по IP («Похоже, нет соединения… Инцидент: …»)
     /доступ ограничен|подтвердите, что вы не робот|вы не робот|are you a robot|verify you are human|slide to verify/i.test(text) ||
     (/выключите vpn/i.test(text) && /инцидент:/i.test(text));
   if (blocked) return { status: 'blocked' };
+  // Товара больше нет (удалён, снят с продажи, ссылка битая) — ждать бесполезно, сразу говорим об этом
+  const lead = (document.querySelector('h1')?.innerText || '') + '\n' + text.slice(0, 1200);
+  if (/по вашему запросу ничего не найдено|такой страницы не существует|страница не найдена|продавец удалил этот товар|товар (?:не найден|удал[её]н|больше не продаётся)|this page (?:does not|doesn't) exist/i.test(lead) &&
+      !document.querySelector('[data-widget="webPrice"], [data-auto="mainPrice"], [class*="priceBlock" i]')) {
+    return { status: 'gone' };
+  }
 
   const ozon = /(^|\.)ozon\.(ru|by|kz)$/.test(url.hostname);
   const ali = /(^|\.)aliexpress\.(ru|com|us)$/.test(url.hostname);
@@ -28,6 +41,11 @@ function readOpenProduct() {
     : market ? /^\/(?:card|product(?:--[^/]+)?)\/(?:[^/]+\/)?\d{5,}\/?$/
       : wb ? /^\/catalog\/\d{5,}\/detail\.aspx\/?$/
         : /^\/item\/(?:[^/]+\/)?\d{6,}(?:\.html)?\/?$/;
+  // Ссылка привела не на товар, а на поиск или каталог магазина — так магазины показывают снятый с продажи товар
+  if ((ozon || ali || market || wb) && document.readyState === 'complete' &&
+      /^\/(?:search|category|catalog\/0\/search|wholesale|brand|highlight|collection|catalog\/?$)/i.test(url.pathname)) {
+    return { status: 'gone' };
+  }
   // Пока идут редиректы короткой ссылки или проверка браузера — ждём
   if (url.protocol !== 'https:' || (!ozon && !ali && !market && !wb) || !productPath.test(url.pathname)) return { status: 'wait' };
   url.search = '';
@@ -89,8 +107,12 @@ function readOpenProduct() {
     .flatMap((image) => [image.dataset.src, image.dataset.original, image.currentSrc || image.src])
     .map(cleanPhoto).filter(Boolean);
 
-  const title = String(heading || product?.name || meta('og:title') || '')
-    .trim().replace(/\s+/g, ' ').slice(0, 300);
+  // Общий заголовок сайта («Интернет-магазин Wildberries: широкий ассортимент…») — не название товара:
+  // так выглядит og:title одностраничной оболочки, пока карточка не дорисовалась
+  const genericTitle = /^(?:интернет.магазин\s+)?(?:wildberries|ozon|яндекс маркет|aliexpress)\b|интернет.магазин wildberries|по вашему запросу ничего не найдено/i;
+  let title = [heading, product?.name, meta('og:title')]
+    .map((value) => String(value || '').trim().replace(/\s+/g, ' '))
+    .find((value) => value && !genericTitle.test(value))?.slice(0, 300) || '';
   const clean = (value, max) => (typeof value === 'string' || typeof value === 'number'
     ? String(value).replace(/\s+/g, ' ').trim().slice(0, max) : '');
   const textOf = (node) => (node ? node.innerText ?? node.textContent ?? '' : '');
@@ -161,24 +183,39 @@ function readOpenProduct() {
   // Блок цены не нашёлся (AliExpress часто меняет имена классов) — ищем цену так, как её видит человек:
   // самая крупная сумма в рублях в верхней части страницы. Цены в ссылках на другие товары
   // («похожие», «смотрите также») не считаем; зачёркнутая сумма рядом — старая цена.
-  if (!shown && (ali || !product)) {
-    const pricePattern = /^(?:от\s*)?\d[\d\s]*(?:[.,]\d{1,2})?\s*₽$/i;
+  if (!shown && (ali || !product) && document.body) {
+    const pricePattern = /^(?:от\s*)?\d[\d\s]*(?:[.,]\d{1,2})?\s*(?:₽|руб\.?)$/i;
     const limit = Math.max(innerHeight, 700) * 1.8;
     const found = [];
-    const nodes = document.body ? document.body.querySelectorAll('span, div, p, b, strong, ins, del, s, bdi') : [];
-    for (let i = 0; i < nodes.length && i < 6000 && found.length < 80; i++) {
-      const el = nodes[i];
-      const raw = textOf(el).trim();
-      if (raw.length > 24 || !pricePattern.test(raw)) continue;
-      if (Array.from(el.children).some((child) => pricePattern.test(textOf(child).trim()))) continue;
+    const seen = new Set();
+    // Идём по текстовым узлам со знаком рубля и поднимаемся к ближайшему блоку, весь текст которого — сумма:
+    // так находится и цена, разбитая на части («1 234» + «,56» + «₽»), сколько бы элементов ни было на странице
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => (/₽|руб/i.test(node.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP),
+    });
+    for (let node = walker.nextNode(), count = 0; node && count < 600 && found.length < 80; node = walker.nextNode(), count++) {
+      let el = node.parentElement;
+      let raw = '';
+      for (let up = 0; el && up < 5; up++, el = el.parentElement) {
+        raw = textOf(el).replace(/\s+/g, ' ').trim();
+        if (raw.length > 32) { el = null; break; }
+        if (pricePattern.test(raw)) break;
+      }
+      if (!el || seen.has(el) || !pricePattern.test(raw)) continue;
+      seen.add(el);
       if (el.closest('a[href*="/item/"], a[href*="/product/"], header, nav, footer, [class*="recommend" i], [class*="similar" i]')) continue;
       const rect = el.getBoundingClientRect();
       if (!rect.width || !rect.height || rect.top + scrollY > limit) continue;
-      const value = rubles(raw.replace(/^от\s*/i, ''), '');
+      const value = rubles(raw.replace(/^от\s*/i, '').replace(/\s*руб\.?$/i, ' ₽'), '');
       if (value === null || value <= 0) continue;
-      let crossed = struck(el, document.body);
-      for (let inner = el; !crossed && inner && inner !== document.body; inner = inner.parentElement) crossed = strikeLine(inner);
-      found.push({ el, value, crossed, size: parseFloat(getComputedStyle(el).fontSize) || 0 });
+      // Размер шрифта — у элемента с цифрами (знак рубля часто мельче)
+      const digitsWalker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      let digits = null;
+      for (let t = digitsWalker.nextNode(); t && !digits; t = digitsWalker.nextNode()) if (/\d/.test(t.nodeValue)) digits = t.parentElement;
+      digits = digits || el;
+      let crossed = struck(digits, document.body);
+      for (let inner = digits; !crossed && inner && inner !== document.body; inner = inner.parentElement) crossed = strikeLine(inner);
+      found.push({ el, value, crossed, size: parseFloat(getComputedStyle(digits).fontSize) || 0 });
     }
     const main = found.filter((item) => !item.crossed).sort((a, b) => b.size - a.size || a.el.getBoundingClientRect().top - b.el.getBoundingClientRect().top)[0];
     if (main) {
@@ -263,7 +300,8 @@ function readOpenProduct() {
 
   // Описание: ld+json и meta (кроме рекламных «купить в интернет-магазине…»), затем блок описания на странице
   // Wildberries пишет «интернет‑магазин» с неразрывным дефисом
-  const advert = /(?:купить|покупайте)[^.]{0,120}(?:интернет.магазин|на ozon|маркете|aliexpress|wildberries|по выгодн)/i;
+  // Рекламные «купить в интернет-магазине…» и общее описание сайта Wildberries — не описание товара
+  const advert = /(?:купить|покупайте)[^.]{0,120}(?:интернет.магазин|на ozon|маркете|aliexpress|wildberries|по выгодн)|коллекции женской, мужской и детской одежды/i;
   const descriptionBox = document.querySelector(ozon
     ? '[data-widget="webDescription"], [data-widget="webMobTextDescription"]'
     : market ? '[data-apiary-widget-name="@card/AboutDescriptionV2"], [data-zone-name="description"]'
@@ -610,6 +648,7 @@ function readOpenProduct() {
     const prices = [].concat(item?.sizes || []).map((size) => size?.price).filter((value) => value?.product > 0);
     const cheapest = prices.sort((a, b) => a.product - b.product)[0];
     return {
+      title: card?.imt_name || item?.name || '',
       description: card?.description,
       specs: [...[].concat(card?.grouped_options || []).flatMap((group) => [].concat(group?.options || [])),
         ...[].concat(card?.options || [])].map((option) => [option?.name, option?.value]),
@@ -633,6 +672,8 @@ function readOpenProduct() {
     }
   }
   const extraWaiting = !extra.done && Date.now() - extra.started < 3000;
+  // Название со страницы не нашлось (карточка WB ещё рисуется) — берём из данных магазина
+  if (!title && extra.data?.title) title = String(extra.data.title).trim().replace(/\s+/g, ' ').slice(0, 300);
 
   // Маркет кладёт описание и часть характеристик в разметку заранее, но рисует их при прокрутке:
   // данные виджетов лежат и в самой странице, и в <template id="second-screen">

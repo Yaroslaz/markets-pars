@@ -333,6 +333,7 @@ async function importViaApp(board, url, source, cardId) {
     const r = await nativeApp.read(url);
     if (r?.error === 'cancelled') return { cancelled: true };
     if (r?.error === 'network') return { failed: 'network' };
+    if (r?.error === 'gone') return { failed: 'gone' };
     const data = r?.ok ? r.data : null;
     if (!data?.url || (!data.title && data.price == null && !data.images?.length)) {
       // Страницу прочитать не дали, но телефон уже раскрыл короткую ссылку до адреса товара —
@@ -804,6 +805,7 @@ async function refreshCards(ids, { onlyMissing = false } = {}) {
   const run = (state.bulkRefresh = { done: 0, total: ids.length, stop: false });
   let good = 0;
   const unreachable = new Set(); // магазины, страницы которых не открылись
+  let gone = 0; // товары, которых в магазине больше нет
   updateSum();
   for (const id of ids) {
     if (run.stop || state.board !== board || !state.unlocked) break;
@@ -818,7 +820,8 @@ async function refreshCards(ids, { onlyMissing = false } = {}) {
           run.cancelled = true;
           break;
         }
-        if (viaPhone?.failed) unreachable.add(SOURCES[c.source].name);
+        if (viaPhone?.failed === 'gone') gone++;
+        else if (viaPhone?.failed) unreachable.add(SOURCES[c.source].name);
         const r = viaPhone?.card ? viaPhone : await api(`/api/cards/${id}/refresh`, { method: 'POST', body: {} });
         if (state.board === board) {
           upsertCard(r.card);
@@ -833,7 +836,8 @@ async function refreshCards(ids, { onlyMissing = false } = {}) {
   }
   state.bulkRefresh = null;
   render();
-  const why = unreachable.size ? ` — не открывается ${[...unreachable].join(', ')}` : '';
+  const why = [unreachable.size ? `не открывается ${[...unreachable].join(', ')}` : '', gone ? `сняты с продажи: ${gone}` : '']
+    .filter(Boolean).map((part, i) => (i ? ', ' : ' — ') + part).join('');
   if (run.cancelled) toast(`Отменено: обновлено ${good} из ${run.total}`);
   else if (onlyMissing) toast(good ? `Дополнено ${good} из ${run.done}${why}` : `Не удалось получить данные${why || ' — магазин их не отдаёт'}`);
   else toast(run.stop ? `Остановлено: обновлено ${good} из ${run.total}` : `Обновлено ${good} из ${run.done}${why}`);
@@ -2065,7 +2069,50 @@ function syncModal() {
   document.documentElement.classList.toggle('modal-open', !!document.querySelector('dialog[open]'));
 }
 
+// Закрытие окон с анимацией: любой close() (✕, тап мимо, «Назад», Escape, кнопки формы) сначала
+// проигрывает уход — листы и карточка уезжают вниз, окна по центру уходят за нижний край, затемнение гаснет —
+// и только потом окно закрывается по-настоящему (событие close и стек «Назад» срабатывают после анимации).
+const nativeDialogClose = HTMLDialogElement.prototype.close;
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+HTMLDialogElement.prototype.close = function (value) {
+  if (!this.open) return;
+  if (this._finishClose) return; // уже уходит
+  // Окно входа не анимируем; анимацию своих жестов (смахивание карточки, лайтбокс) уже проиграли — класс closing
+  if (reducedMotion.matches || this === accessDialog || this.classList.contains('closing')) return nativeDialogClose.call(this, value);
+  if (this === lightbox) return closeLightboxAnimated();
+  this.classList.add('is-closing');
+  let timer = 0;
+  const finish = () => {
+    if (!this._finishClose) return;
+    this._finishClose = null;
+    clearTimeout(timer);
+    this.removeEventListener('animationend', onEnd);
+    this.classList.remove('is-closing');
+    if (this.open) nativeDialogClose.call(this, value);
+  };
+  const onEnd = (e) => e.target === this && finish();
+  this._finishClose = finish;
+  this.addEventListener('animationend', onEnd);
+  timer = setTimeout(finish, 420); // если анимация не запустилась (вкладка в фоне) — закрываем всё равно
+};
+// Escape закрывает окно в обход close() — перехватываем, чтобы тоже была анимация
+document.addEventListener('cancel', (e) => {
+  const d = e.target;
+  if (!(d instanceof HTMLDialogElement) || e.defaultPrevented || pinnedDialogs().includes(d)) return;
+  e.preventDefault();
+  d.close();
+}, true); // cancel не всплывает — ловим на погружении
+// Кнопки <form method="dialog"> тоже закрывают окно сами — после обработчиков формы закрываем с анимацией
+document.addEventListener('submit', (e) => {
+  const form = e.target;
+  const d = form.closest?.('dialog');
+  if (e.defaultPrevented || !d || form.getAttribute('method') !== 'dialog' || pinnedDialogs().includes(d)) return;
+  e.preventDefault();
+  d.close(e.submitter?.value ?? '');
+});
+
 function openDialog(d) {
+  d._finishClose?.(); // открываем снова, пока окно ещё уходит, — сразу завершаем уход
   if (d.open) return;
   d.showModal();
   syncModal();
@@ -3224,7 +3271,8 @@ function bind() {
   for (const d of [addDialog, editDialog, settingsDialog, serverDialog, notifyDialog, $('#shareDialog'), $('#boardsDialog'), moveDialog, confirmBox])
     d.addEventListener('click', (e) => e.target === d && d.close());
   // Окно закрылось чем угодно (✕, Escape, тап мимо, отправка формы) — убираем его слой из истории «Назад»
-  for (const d of $$('dialog')) d.addEventListener('close', () => (popLayer(d), syncModal()));
+  // Событие close приходит асинхронно: если окно уже открыли снова (пока оно уходило), его слой не трогаем
+  for (const d of $$('dialog')) d.addEventListener('close', () => (!d.open && popLayer(d), syncModal()));
   confirmBox.addEventListener('close', onConfirmClose);
   moveDialog.addEventListener('close', () => showMoveNew(false));
   $('#moveForm').addEventListener('submit', (e) => {

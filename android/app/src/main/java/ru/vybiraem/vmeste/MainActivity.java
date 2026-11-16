@@ -435,9 +435,10 @@ public class MainActivity extends Activity {
     private void pushSafeArea() {
         if (safeArea == null) return;
         String js = String.format(java.util.Locale.ROOT,
-                "(function(s){s.setProperty('--native-safe-t','%.1fpx');s.setProperty('--native-safe-b','%.1fpx');"
+                // В самом начале загрузки документа ещё нет — тогда переменные выставит onPageFinished
+                "(function(e){if(!e)return;var s=e.style;s.setProperty('--native-safe-t','%.1fpx');s.setProperty('--native-safe-b','%.1fpx');"
                         + "s.setProperty('--native-safe-l','%.1fpx');s.setProperty('--native-safe-r','%.1fpx')})"
-                        + "(document.documentElement.style)",
+                        + "(document.documentElement)",
                 safeArea[0], safeArea[1], safeArea[2], safeArea[3]);
         site.evaluateJavascript(js, null);
     }

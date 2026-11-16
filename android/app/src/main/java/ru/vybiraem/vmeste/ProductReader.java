@@ -42,7 +42,9 @@ final class ProductReader {
     private static final long FIRST_POLL_MS = 1200;
     private static final long POLL_MS = 700;
     /** Сколько ждём молча, прежде чем показать страницу пользователю. */
-    private static final long HIDDEN_LIMIT_MS = 15_000;
+    private static final long HIDDEN_LIMIT_MS = 25_000;
+    /** Мобильная версия Wildberries во встроенном браузере не загружает карточку товара — открываем компьютерную. */
+    private static final Pattern DESKTOP_HOST = Pattern.compile("(^|\\.)(wildberries\\.(ru|by|kz|am|kg|uz)|wb\\.ru)$");
     /** Сколько ждём недостающие цену или фото, когда название уже есть. */
     private static final long PARTIAL_GRACE_MS = 5_000;
     /** Многие проверки (например, Яндекса) проходят сами за секунду-две — столько ждём, прежде чем показать. */
@@ -83,6 +85,8 @@ final class ProductReader {
     private View cover;
     private Job current;
     private boolean showing;
+    private final String mobileUserAgent;
+    private final String desktopUserAgent;
 
     @SuppressLint("SetJavaScriptEnabled")
     ProductReader(Activity activity, FrameLayout root) {
@@ -118,7 +122,11 @@ final class ProductReader {
         s.setAllowContentAccess(false);
         s.setMediaPlaybackRequiresUserGesture(true);
         // Для магазина это обычный мобильный Chrome, а не встроенный браузер приложения
-        s.setUserAgentString(s.getUserAgentString().replace("; wv)", ")").replace("Version/4.0 ", ""));
+        mobileUserAgent = s.getUserAgentString().replace("; wv)", ")").replace("Version/4.0 ", "");
+        java.util.regex.Matcher chrome = Pattern.compile("Chrome/(\\d+)").matcher(mobileUserAgent);
+        desktopUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/"
+                + (chrome.find() ? chrome.group(1) : "130") + ".0.0.0 Safari/537.36";
+        s.setUserAgentString(mobileUserAgent);
         if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
             WebSettingsCompat.setRequestedWithHeaderOriginAllowList(s, Collections.emptySet());
         }
@@ -221,6 +229,9 @@ final class ProductReader {
             return;
         }
         current.started = SystemClock.uptimeMillis();
+        String host = Uri.parse(current.url).getHost();
+        boolean desktop = host != null && DESKTOP_HOST.matcher(host.toLowerCase()).find();
+        browser.getSettings().setUserAgentString(desktop ? desktopUserAgent : mobileUserAgent);
         browser.loadUrl(current.url);
         handler.postDelayed(poll, FIRST_POLL_MS);
     }
@@ -243,6 +254,11 @@ final class ProductReader {
         } catch (JSONException ignored) {
         }
         String status = result == null ? "wait" : result.optString("status", "wait");
+        // Товара больше нет (удалён, снят с продажи) — ждать нечего
+        if ("gone".equals(status)) {
+            finish(job, error(job.id, "gone"));
+            return;
+        }
 
         if ("ok".equals(status)) {
             if (result.optBoolean("complete")) {
