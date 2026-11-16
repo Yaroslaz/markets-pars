@@ -256,7 +256,9 @@ function applyCards(cards, etag) {
 // По просьбе сайта оно незаметно загружает страницу товара в скрытом браузере телефона —
 // с IP и cookies телефона, поэтому магазины не блокируют, — и выполняет там readOpenProduct.
 // Браузер показывается, только если магазин просит пройти проверку.
-const nativeSources = new Set(['ozon', 'ym', 'ali']);
+const nativeSources = new Set(['ozon', 'ym', 'ali', 'wb']);
+// Подпись цены без скидки магазина (крупно магазин показывает цену со своей картой или кошельком)
+const NO_CARD_PRICE = { ozon: 'без Ozon Банка', wb: 'без WB Кошелька' };
 const nativeApp = (() => {
   const port = window.MarketsNative;
   if (!port || typeof port.postMessage !== 'function' || typeof readOpenProduct !== 'function') return null;
@@ -785,8 +787,8 @@ function toggleSumMenu() {
 // Товар без цены или без фото — его стоит перечитать
 const isIncomplete = (c) => c.price == null || !c.images?.length;
 
-// Перечитывает товары по очереди. В приложении для Android (и с расширением) Ozon, Маркет
-// и AliExpress читаются с телефона, остальное — сервером. onlyMissing — подсчёт «дополнено» для товаров без данных.
+// Перечитывает товары по очереди. В приложении для Android (и с расширением) Ozon, Маркет,
+// Wildberries и AliExpress читаются с телефона, остальное — сервером. onlyMissing — подсчёт «дополнено» для товаров без данных.
 async function refreshCards(ids, { onlyMissing = false } = {}) {
   if (state.bulkRefresh || !ids.length) return;
   const board = state.board;
@@ -1244,7 +1246,7 @@ function refreshViewer(full = false) {
   const info = `
     <div class="info">
       ${priceHtml(c)}
-      ${c.source === 'ozon' && c.priceNoCard > (c.price || 0) ? `<div class="price-alt">без Ozon Банка ${rub(c.priceNoCard)}</div>` : ''}
+      ${NO_CARD_PRICE[c.source] && c.priceNoCard > (c.price || 0) ? `<div class="price-alt">${NO_CARD_PRICE[c.source]} ${rub(c.priceNoCard)}</div>` : ''}
       <h2>${esc(c.title)}</h2>
       ${metaHtml(c)}
       ${votesHtml(c)}

@@ -420,7 +420,14 @@ function keepCompleteProduct(fresh, old) {
 const RICH_FIELDS = ['description', 'specs', 'variants', 'reviewsTop', 'priceNoCard', 'rating', 'reviews'];
 function keepRichFields(product, old) {
   const result = { ...product };
+  // Сервер видит только цену без скидки (WB Кошелька, Ozon Банка). Если она та же, что прочитали на устройстве
+  // рядом с ценой со скидкой, — та цена всё ещё верна, оставляем её. Иначе прежняя «цена без скидки» уже не про эту цену.
+  if (result.price != null && result.price === old.priceNoCard && old.price != null && old.price < result.price) {
+    Object.assign(result, { price: old.price, priceNote: old.priceNote ?? null });
+    if (!(result.oldPrice > result.price)) result.oldPrice = old.oldPrice ?? null;
+  }
   for (const key of RICH_FIELDS) {
+    if (key === 'priceNoCard' && result.price !== old.price) continue;
     const missing = result[key] == null || (Array.isArray(result[key]) && !result[key].length);
     if (missing && old[key] != null) result[key] = old[key];
   }
