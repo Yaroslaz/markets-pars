@@ -11,8 +11,8 @@ if (typeof readOpenProduct !== 'function') importScripts('product-import.js');
 // Адрес сайта для кнопки расширения. Если у вас своя копия сайта — поменяйте здесь и в manifest.json (content_scripts).
 const SITE_URL = 'https://yaroslaz.github.io/markets-pars/';
 
-const MARKET_HOST = /(^|\.)(ozon\.(ru|by|kz)|market\.yandex\.(ru|by|kz|com)|aliexpress\.(ru|com|us)|aliclick\.shop|ali\.click)$|^(ya\.cc|ozon\.onelink\.me)$/;
-const PRODUCT_HOST = /(^|\.)(ozon\.(ru|by|kz)|market\.yandex\.(ru|by|kz|com)|aliexpress\.(ru|com|us))$/;
+const MARKET_HOST = /(^|\.)(ozon\.(ru|by|kz)|market\.yandex\.(ru|by|kz|com)|wildberries\.(ru|by|kz|am|kg|uz)|wb\.ru|aliexpress\.(ru|com|us)|aliclick\.shop|ali\.click)$|^(ya\.cc|ozon\.onelink\.me)$/;
+const PRODUCT_HOST = /(^|\.)(ozon\.(ru|by|kz)|market\.yandex\.(ru|by|kz|com)|wildberries\.(ru|by|kz|am|kg|uz)|aliexpress\.(ru|com|us))$/;
 const POLL_MS = 800;
 const HIDDEN_LIMIT_MS = 15_000; // сколько ждём молча, прежде чем показать окно
 const PARTIAL_GRACE_MS = 5_000; // сколько ждём недостающие цену или фото

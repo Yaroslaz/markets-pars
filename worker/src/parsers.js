@@ -443,15 +443,13 @@ export function productFromBrowser(link, details) {
   const ozon = source === 'ozon';
   const ali = source === 'ali' && /(^|\.)aliexpress\.(ru|com|us)$/.test(url.hostname);
   const market = source === 'ym' && /(^|\.)market\.yandex\.(ru|by|kz|com)$/.test(url.hostname);
-  const path = ozon
-    ? /^\/(?:product\/(?:[^/]+-)?\d{5,}|context\/detail\/id\/\d{5,})\/?$/
-    : market ? /^\/(?:card|product(?:--[^/]+)?)\/(?:[^/]+\/)?\d{5,}\/?$/
-      : /^\/item\/(?:[^/]+\/)?\d{6,}(?:\.html)?\/?$/;
-  if ((!ozon && !ali && !market) || url.protocol !== 'https:' || url.username || url.password ||
+  const wb = source === 'wb' && STORE_HOSTS.wb.test(url.hostname);
+  const path = ozon ? BROWSER_PATHS.ozon : market ? BROWSER_PATHS.ym : wb ? BROWSER_PATHS.wb : BROWSER_PATHS.ali;
+  if ((!ozon && !ali && !market && !wb) || url.protocol !== 'https:' || url.username || url.password ||
       !path.test(url.pathname) || url.pathname.length > 1000) {
-    throw new HttpError(400, 'Нужна полная ссылка на товар Ozon, Яндекс Маркета или AliExpress');
+    throw new HttpError(400, 'Нужна полная ссылка на товар Ozon, Яндекс Маркета, Wildberries или AliExpress');
   }
-  const id = ozon ? ozonId(link) : market ? ymIdFromUrl(link) : aliId(link);
+  const id = ozon ? ozonId(link) : market ? ymIdFromUrl(link) : wb ? url.pathname.match(/\/catalog\/(\d+)/)?.[1] : aliId(link);
   if (!id) throw new HttpError(400, 'Не удалось определить товар по ссылке');
   url.search = '';
   url.hash = '';
@@ -463,7 +461,7 @@ export function productFromBrowser(link, details) {
   const money = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
   if (money(details.price)) {
     Object.assign(patch, { price: details.price, priceNote: 'при импорте из браузера' });
-    // Старая (зачёркнутая) цена и цена Ozon без скидки банка — только вместе с ценой и только больше неё
+    // Старая (зачёркнутая) цена и цена без скидки банка Ozon или WB Кошелька — только вместе с ценой и только больше неё
     if (money(details.oldPrice) && details.oldPrice > details.price) patch.oldPrice = details.oldPrice;
     if (money(details.priceNoCard) && details.priceNoCard > details.price &&
         (patch.oldPrice == null || details.priceNoCard < patch.oldPrice)) patch.priceNoCard = details.priceNoCard;
@@ -497,6 +495,10 @@ export function productFromBrowser(link, details) {
 
 function marketplacePhoto(image, source) {
   if (source === 'ozon') return /(^|\.)ozone\.ru$/.test(image.hostname);
+  // Фото Wildberries: basket-12.wbbasket.ru (или региональный …geobasket.ru)/vol…/part…/<артикул>/images/big/1.webp
+  if (source === 'wb') {
+    return /(^|\.)(wbbasket\.ru|geobasket\.ru)$/.test(image.hostname) && /^\/vol\d+\/part\d+\/\d+\/images\//.test(image.pathname);
+  }
   if (source === 'ali') return /(^|\.)(alicdn\.com|aliexpress-media\.com)$/.test(image.hostname);
   return /\.marketpic\.ru$/.test(image.hostname) ||
     (/^(?:avatars\.mds\.yandex\.(?:net|ru)|avatars\.yandex\.net)$/.test(image.hostname) &&
@@ -844,11 +846,13 @@ function cleanReviews(list) {
 const BROWSER_PATHS = {
   ozon: /^\/(?:product\/(?:[^/]+-)?\d{5,}|context\/detail\/id\/\d{5,})\/?$/,
   ym: /^\/(?:card|product(?:--[^/]+)?)\/(?:[^/]+\/)?\d{5,}\/?$/,
+  wb: /^\/catalog\/\d{5,}\/detail\.aspx\/?$/,
   ali: /^\/item\/(?:[^/]+\/)?\d{6,}(?:\.html)?\/?$/,
 };
 const STORE_HOSTS = {
   ozon: /(^|\.)ozon\.(ru|by|kz)$/,
   ym: /(^|\.)market\.yandex\.(ru|by|kz|com)$/,
+  wb: /(^|\.)wildberries\.(ru|by|kz|am|kg|uz)$/,
   ali: /(^|\.)aliexpress\.(ru|com|us)$/,
 };
 
