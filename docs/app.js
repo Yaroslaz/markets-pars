@@ -170,6 +170,8 @@ async function api(path, opts = {}) {
   if (opts.body) headers.set('Content-Type', 'application/json');
   if (opts.file) headers.set('Content-Type', opts.file.type);
   if (token) headers.set('Authorization', 'Bearer ' + token);
+  // Кто действует (парень или девушка): по этому сервер решает, кому прислать уведомление
+  if (!opts.public && state.role) headers.set('X-Actor', state.role);
   // ETag: если данные на сервере не менялись, он ответит пустым 304 — без VPN это сильно быстрее
   if (opts.etag) headers.set('If-None-Match', opts.etag);
   const res = await fetch(base + path, {
@@ -290,6 +292,16 @@ const nativeApp = (() => {
         port.postMessage(JSON.stringify({ type: 'clipboard', id }));
       });
     },
+    // Просьба с ответом (уведомления): { type, ... } → ответ приложения или null, если оно не ответило вовремя.
+    // Расширение для браузера такие сообщения не понимает и молчит — тогда через timeout будет null.
+    ask(message, timeout = 1500) {
+      return new Promise((resolve) => {
+        const id = ++seq;
+        const timer = setTimeout(() => (pending.delete(id), resolve(null)), timeout);
+        pending.set(id, (msg) => (clearTimeout(timer), resolve(msg)));
+        port.postMessage(JSON.stringify({ ...message, id }));
+      });
+    },
   };
 })();
 
@@ -352,6 +364,8 @@ function lockApp() {
   for (const dialog of $$('dialog[open]')) {
     if (dialog !== accessDialog) dialog.close();
   }
+  // Без входа уведомления этому устройству не положены
+  syncNotify();
   render();
   if (!accessDialog.open) {
     $('#accessStatus').textContent = '';
@@ -1430,6 +1444,8 @@ function setRole(role) {
   cardSig.clear();
   render();
   if (state.openId) refreshViewer();
+  // Уведомления о своих действиях не приходят — сообщаем приложению или серверу новую роль
+  syncNotify();
 }
 
 const roleDialog = $('#roleDialog');
@@ -1444,6 +1460,7 @@ function openSettings() {
   markFont();
   previewFonts();
   markServer();
+  markNotify();
   openDialog(settingsDialog);
 }
 
@@ -1512,6 +1529,267 @@ function saveSettings() {
   }
 }
 
+/* ============================= Уведомления ============================= */
+
+// Уведомления без сторонних сервисов, аккаунтов и регистраций:
+//  • в приложении для Android приложение само раз в ~15 минут спрашивает у сервера новые события
+//    (лайки, совпадения, товары, подборки) и показывает их; сайт передаёт ему адрес сервера, вход, роль и настройки;
+//  • в браузере (Chrome на Android, сайт на экране «Домой» iPhone, компьютер) — Web Push: сервер сам шифрует
+//    уведомление и отправляет его через push-сервис браузера, ключи сервер создаёт себе сам.
+// Настройки у каждого устройства свои: хранятся здесь и уходят приложению или серверу вместе с подпиской.
+const NOTIFY_DEFAULTS = { on: false, likes: true, matches: true, adds: true, boards: true, quiet: false, from: '23:00', to: '08:00' };
+const NOTIFY_KINDS = ['likes', 'matches', 'adds', 'boards'];
+const notifyDialog = $('#notifyDialog');
+const notifyForm = $('#notifyForm');
+const IS_STANDALONE = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const notice = {
+  settings: readNotifySettings(),
+  mode: null, // app — приложение для Android, push — Web Push в браузере, none — недоступно
+  problem: '', // почему уведомления сейчас не придут
+  fix: '', // allow — можно запросить разрешение, os — включить в настройках системы
+  active: false, // уведомления действительно будут приходить
+  checking: true,
+  pending: null, // уведомление нажали до входа — откроем карточку после него
+};
+
+function readNotifySettings() {
+  try {
+    return { ...NOTIFY_DEFAULTS, ...JSON.parse(store.get('notify') || '{}') };
+  } catch {
+    return { ...NOTIFY_DEFAULTS };
+  }
+}
+
+const pushSupported = () =>
+  window.isSecureContext && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+
+// Где живут уведомления на этом устройстве. Приложение отвечает на «notify-hello», расширение — нет.
+let notifyModeReady = null;
+function detectNotifyMode() {
+  notifyModeReady ||= (async () => {
+    if (nativeApp && IS_ANDROID) {
+      const r = await nativeApp.ask({ type: 'notify-hello' });
+      if (r?.ok) return 'app';
+    }
+    return pushSupported() ? 'push' : 'none';
+  })().then((mode) => (notice.mode = mode));
+  return notifyModeReady;
+}
+
+function unsupportedReason() {
+  if (IS_IOS && !IS_STANDALONE) return 'добавьте сайт на экран «Домой»';
+  if (!window.isSecureContext) return 'нужен адрес сайта с HTTPS';
+  return 'браузер не поддерживает push';
+}
+
+// Передаёт вход, роль и настройки туда, где живут уведомления. Вызывается при входе и выходе,
+// смене роли, сервера и настроек. Ошибки здесь не мешают остальному сайту.
+let notifySyncing = Promise.resolve();
+function syncNotify() {
+  notifySyncing = notifySyncing.then(doSyncNotify, doSyncNotify);
+  return notifySyncing;
+}
+
+async function doSyncNotify() {
+  const mode = await detectNotifyMode();
+  const s = notice.settings;
+  Object.assign(notice, { problem: '', fix: '', active: false });
+  try {
+    if (mode === 'app') {
+      const r = await nativeApp.ask({
+        type: 'notify-config',
+        api: state.api,
+        token: state.unlocked ? state.accessToken : '',
+        role: state.role,
+        settings: s,
+      }, 3000);
+      if (s.on && !r?.granted) Object.assign(notice, { problem: 'запрещены в настройках телефона', fix: 'os' });
+      else notice.active = s.on && !!r;
+    } else if (mode === 'push') {
+      await syncPush();
+    } else if (s.on) {
+      notice.problem = unsupportedReason();
+    }
+  } catch (e) {
+    notice.problem = e?.message || 'ошибка';
+  }
+  notice.checking = false;
+  renderNotify();
+}
+
+const keyBytes = (text) => Uint8Array.from(atob(text.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+const sameBytes = (a, b) => !!a && !!b && a.byteLength === b.byteLength && new Uint8Array(a).every((v, i) => v === b[i]);
+
+async function syncPush() {
+  const s = notice.settings;
+  let reg = await navigator.serviceWorker.getRegistration('./');
+  if (!s.on || !state.unlocked || !state.api) {
+    // Выключили (или вышли) — отписываемся: браузер забудет подписку, а сервер удалит её при следующей отправке
+    const sub = await reg?.pushManager.getSubscription();
+    if (sub) {
+      if (state.unlocked && state.api) await api('/api/push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } }).catch(() => {});
+      await sub.unsubscribe().catch(() => {});
+      store.set('notify_sent', '');
+    }
+    if (s.on) notice.problem = 'войдите в приложение';
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    return void Object.assign(notice, { problem: 'запрещены в настройках браузера', fix: 'os' });
+  }
+  if (Notification.permission !== 'granted') {
+    return void Object.assign(notice, { problem: 'нужно разрешение', fix: 'allow' });
+  }
+  reg = await navigator.serviceWorker.register('sw.js', { scope: './' });
+  await navigator.serviceWorker.ready;
+  await saveSwSettings();
+  const { key } = await api('/api/push/key');
+  const serverKey = keyBytes(key);
+  let sub = await reg.pushManager.getSubscription();
+  // Подписка от другого сервера (сменили адрес) — заменяем
+  if (sub && !sameBytes(sub.options?.applicationServerKey, serverKey)) {
+    await sub.unsubscribe().catch(() => {});
+    sub = null;
+  }
+  sub ||= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: serverKey });
+  const settings = Object.fromEntries(NOTIFY_KINDS.map((k) => [k, s[k]]));
+  // Одна и та же подписка с теми же настройками уходит на сервер не чаще раза в день
+  const sig = JSON.stringify([state.api, sub.endpoint, state.role, settings, new Date().toDateString()]);
+  if (store.get('notify_sent') !== sig) {
+    await api('/api/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON(), role: state.role, settings } });
+    store.set('notify_sent', sig);
+  }
+  notice.active = true;
+}
+
+// Тихие часы и роль для service worker: он читает их перед показом уведомления
+async function saveSwSettings() {
+  const { quiet, from, to } = notice.settings;
+  try {
+    const cache = await caches.open('mp-notify');
+    await cache.put(new URL('notify-settings', location.href).href,
+      new Response(JSON.stringify({ quiet, from, to, role: state.role }), { headers: { 'Content-Type': 'application/json' } }));
+  } catch {}
+}
+
+function notifyStatus() {
+  const s = notice.settings;
+  if (notice.checking && s.on) return ['wait', 'проверяю…'];
+  if (s.on && notice.problem) return ['err', 'недоступно: ' + notice.problem];
+  if (!s.on) return ['off', 'выключены'];
+  if (notice.active) return ['ok', notice.mode === 'app' ? 'в приложении' : 'push в браузере'];
+  return ['wait', 'подключаю…'];
+}
+
+// Строка «Уведомления» в настройках
+function markNotify() {
+  const hint = $('#notifyHint');
+  const [status, text] = notifyStatus();
+  hint.dataset.status = status === 'wait' ? 'off' : status;
+  $('.v', hint).textContent = status === 'err' ? 'недоступно' : text;
+  hint.title = text;
+}
+
+function renderNotify() {
+  markNotify();
+  if (!notifyDialog.open) return;
+  const s = notice.settings;
+  const f = notifyForm.elements;
+  f.on.checked = s.on;
+  for (const k of [...NOTIFY_KINDS, 'quiet']) f[k].checked = s[k];
+  if (document.activeElement !== f.from) f.from.value = s.from;
+  if (document.activeElement !== f.to) f.to.value = s.to;
+  $('#notifyKinds').disabled = $('#notifyQuiet').disabled = !s.on;
+  const other = state.role === 'm' ? 'девушка' : state.role === 'f' ? 'парень' : 'второй';
+  $('#notifyLikesHint').textContent = `Когда ${other} ставит сердце`;
+  const [status, text] = notifyStatus();
+  const line = $('#notifyStatus');
+  line.dataset.status = status;
+  line.textContent = text[0].toUpperCase() + text.slice(1);
+  // Подсказки: iPhone без значка на экране «Домой», запрет в системе, приложение для Android
+  const help = $('#notifyHelp');
+  const iosInstall = notice.mode === 'none' && IS_IOS && !IS_STANDALONE;
+  help.hidden = !iosInstall && !(s.on && notice.fix === 'os');
+  help.textContent = iosInstall
+    ? 'Добавьте сайт на экран «Домой», чтобы получать уведомления: в Safari нажмите «Поделиться» → «На экран „Домой“» и откройте сайт со значка.'
+    : notice.mode === 'app'
+      ? 'Разрешите приложению показывать уведомления в настройках телефона.'
+      : 'Разрешите сайту показывать уведомления в настройках браузера (значок слева от адреса) и включите снова.';
+  $('#notifyAllow').hidden = !(s.on && notice.fix === 'allow');
+  $('#notifyOs').hidden = !(s.on && notice.fix === 'os' && notice.mode === 'app');
+  $('#notifyFix').hidden = $('#notifyAllow').hidden && $('#notifyOs').hidden;
+}
+
+function openNotify() {
+  openDialog(notifyDialog);
+  renderNotify();
+  syncNotify();
+}
+
+function saveNotifySettings() {
+  store.set('notify', JSON.stringify(notice.settings));
+}
+
+// Изменили переключатель или время. Разрешение на уведомления браузер даёт только в ответ на нажатие,
+// поэтому спрашиваем его прямо здесь, ещё до любых ожиданий.
+async function onNotifyChange(input) {
+  const s = notice.settings;
+  const f = notifyForm.elements;
+  if (input === f.from || input === f.to) {
+    if (!/^\d\d:\d\d$/.test(input.value)) return;
+    s[input.name] = input.value;
+  } else if (input.name in s) {
+    s[input.name] = input.checked;
+  }
+  saveNotifySettings();
+  if (input !== f.on || !s.on) return void syncNotify();
+
+  // Включили: просим разрешение
+  if (notice.mode === 'push' && Notification.permission === 'default') {
+    const asked = Notification.requestPermission();
+    renderNotify();
+    await asked.catch(() => {});
+  } else if (notice.mode === 'app') {
+    renderNotify();
+    await nativeApp.ask({ type: 'notify-permission' }, 120000);
+  } else if (notice.mode === 'none') {
+    // Здесь уведомления не работают — переключатель возвращается, а подсказка объясняет почему
+    s.on = false;
+    saveNotifySettings();
+    notice.problem = unsupportedReason();
+    renderNotify();
+    if (!(IS_IOS && !IS_STANDALONE)) toast('Уведомления недоступны: ' + notice.problem);
+    return;
+  }
+  await syncNotify();
+  if (s.on && notice.problem) buzz(20);
+}
+
+async function allowNotify() {
+  if (notice.mode === 'push' && Notification.permission === 'default') await Notification.requestPermission().catch(() => {});
+  syncNotify();
+}
+
+// Нажали на уведомление: открываем подборку и карточку
+async function openFromNotice(board, cardId) {
+  board = /^[\w-]{1,40}$/.test(board || '') ? board : null;
+  cardId = /^[\w-]{1,40}$/.test(cardId || '') ? cardId : null;
+  if (!state.unlocked || !state.api) return void (notice.pending = { board, cardId });
+  if (board && board !== state.board) await switchBoard(board, false);
+  else await loadCards({ silent: true });
+  if (!cardId) return;
+  if (!state.cards.some((c) => c.id === cardId)) return toast('Этого товара уже нет в подборке');
+  if (state.openId === cardId && viewer.open) return;
+  if (viewer.open) closeViewer();
+  openViewer(cardId);
+}
+// Для приложения Android: уведомление нажали, когда сайт уже открыт
+window.mpOpenCard = (board, cardId) => (openFromNotice(board, cardId), true);
+// Для Web Push: service worker просит открыть карточку в уже открытой вкладке
+navigator.serviceWorker?.addEventListener('message', (e) => {
+  if (e.data?.type === 'open-card') openFromNotice(e.data.board, e.data.card);
+});
+
 /* ============================== Подборки ============================== */
 
 const boardsDialog = $('#boardsDialog');
@@ -1579,8 +1857,9 @@ function switchBoard(id, notify = true) {
   cardSig.clear();
   setFilter('all');
   renderBoardName();
-  loadCards();
+  const loading = loadCards();
   if (notify) toast(`Подборка «${currentBoard()?.name || id}»`);
+  return loading;
 }
 
 function pickBoard(id) {
@@ -2702,6 +2981,12 @@ function bind() {
         return openSettings();
       case 'server':
         return openServer();
+      case 'notify':
+        return openNotify();
+      case 'notify-allow':
+        return allowNotify();
+      case 'notify-os-settings':
+        return nativeApp?.ask({ type: 'notify-settings' }, 500);
       case 'close-dialog':
         return actEl.closest('dialog')?.close();
       case 'boards':
@@ -2840,7 +3125,9 @@ function bind() {
     if (location.hash.startsWith('#card=')) history.replaceState(null, '', location.pathname + location.search);
   });
   viewer.addEventListener('click', (e) => e.target === viewer && closeViewer());
-  for (const d of [addDialog, editDialog, settingsDialog, serverDialog, $('#shareDialog'), $('#boardsDialog'), moveDialog, confirmBox])
+  notifyForm.addEventListener('change', (e) => onNotifyChange(e.target));
+  notifyForm.addEventListener('submit', (e) => e.preventDefault());
+  for (const d of [addDialog, editDialog, settingsDialog, serverDialog, notifyDialog, $('#shareDialog'), $('#boardsDialog'), moveDialog, confirmBox])
     d.addEventListener('click', (e) => e.target === d && d.close());
   // Окно закрылось чем угодно (✕, Escape, тап мимо, отправка формы) — убираем его слой из истории «Назад»
   for (const d of $$('dialog')) d.addEventListener('close', () => popLayer(d));
@@ -2963,6 +3250,14 @@ async function enterApp() {
   }
   const m = location.hash.match(/^#card=([\w-]+)/);
   if (m && state.cards.some((c) => c.id === m[1])) openViewer(m[1]);
+  // Уведомление нажали, пока шёл вход
+  if (notice.pending) {
+    const { board, cardId } = notice.pending;
+    notice.pending = null;
+    openFromNotice(board, cardId);
+  }
+  // Приложению — свежий вход и роль, браузеру — подписка на push (если уведомления включены)
+  syncNotify();
 }
 
 function start() {

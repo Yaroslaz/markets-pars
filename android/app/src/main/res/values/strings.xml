@@ -5,4 +5,8 @@
     <string name="check_slow">Не получилось прочитать страницу автоматически. Если магазин показывает проверку, пройдите её.</string>
     <string name="check_cancel">Отмена</string>
     <string name="no_app">Нет приложения, чтобы открыть ссылку</string>
+    <string name="notify_channel">Подборки</string>
+    <string name="notify_channel_desc">Лайки, совпадения, новые товары и подборки</string>
+    <string name="notify_channel_quiet">Подборки в тихие часы</string>
+    <string name="notify_channel_quiet_desc">Те же уведомления, но без звука — в тихие часы из настроек</string>
 </resources>

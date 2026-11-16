@@ -1,7 +1,8 @@
 import { parseProduct, resolveLink, productFromBrowser, mergeBrowserProduct, extractUrls, HttpError } from './parsers.js';
 import { accessConfig, requireSession, signIn } from './access.js';
+import { vapidKeys, sendPush, checkEndpoint } from './push.js';
 
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 const STALE_MS = 6 * 60 * 60 * 1000; // через сколько обновлять цену/рейтинг в фоне
 const MAX_PHOTO_BYTES = 512 * 1024;
 // Лайки берём тем же запросом, что и карточки, — один поход в базу вместо нескольких
@@ -43,6 +44,30 @@ const SCHEMA = [
   // Подборки, у которых есть карточки, но нет записи (созданы до появления списка), — регистрируем.
   // Раньше это делалось при каждом открытии списка подборок — лишняя запись в базу на каждый запрос.
   `INSERT OR IGNORE INTO boards (id, name, created_at) SELECT board, board, MIN(created_at) FROM cards GROUP BY board`,
+  // События для уведомлений: лайк, совпадение, новый товар, новая подборка. Хранятся две недели.
+  `CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    board TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    actor TEXT,
+    card_id TEXT,
+    title TEXT,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_events_time ON events (created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_events_card ON events (card_id, kind)`,
+  // Служебные значения сервера (ключи VAPID для Web Push)
+  `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  // Подписки браузеров на Web Push: кто подписан (роль) и какие уведомления хочет
+  `CREATE TABLE IF NOT EXISTS push_subs (
+    endpoint TEXT PRIMARY KEY,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    role TEXT,
+    settings TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
 ];
 
 let schemaReady = false;
@@ -55,7 +80,7 @@ async function ensureSchema(db) {
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, If-None-Match',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, If-None-Match, X-Actor',
   'Access-Control-Expose-Headers': 'ETag',
   'Access-Control-Max-Age': '86400',
 };
@@ -103,6 +128,9 @@ async function route(request, env, ctx) {
   if (path === '/api/auth/session' && method === 'GET') return json({ ok: true });
   if (!env.DB) throw new HttpError(500, 'База D1 не подключена (binding DB)');
   await ensureSchema(env.DB);
+  // Кто действует: сайт присылает роль устройства (m — парень, f — девушка), чтобы второй получил уведомление
+  const actor = ['m', 'f'].includes(request.headers.get('X-Actor')) ? request.headers.get('X-Actor') : null;
+  const notify = (events) => events.length && ctx.waitUntil(pushEvents(env, events, url.origin));
 
   // Всё, что нужно сайту при запуске, одним запросом: сессия проверена выше, тут подборки и карточки
   if (path === '/api/bootstrap' && method === 'GET') {
@@ -110,8 +138,8 @@ async function route(request, env, ctx) {
     return jsonTagged(request, { boards, ...cards });
   }
   if (path === '/api/cards' && method === 'GET') return jsonTagged(request, await cardsData(env, ctx, url));
-  if (path === '/api/cards' && method === 'POST') return addCard(env, await body(request));
-  if (path === '/api/cards/import' && method === 'POST') return addCard(env, await body(request), true);
+  if (path === '/api/cards' && method === 'POST') return addCard(env, await body(request), false, actor, notify);
+  if (path === '/api/cards/import' && method === 'POST') return addCard(env, await body(request), true, actor, notify);
   if (path === '/api/cards/move' && method === 'POST') return moveCards(env, await body(request));
   if (path === '/api/cards/delete' && method === 'POST') return deleteCards(env, await body(request));
   if (path === '/api/resolve' && method === 'POST') {
@@ -124,7 +152,12 @@ async function route(request, env, ctx) {
   }
 
   if (path === '/api/boards' && method === 'GET') return json({ boards: await boardsData(env) });
-  if (path === '/api/boards' && method === 'POST') return createBoard(env, await body(request));
+  if (path === '/api/boards' && method === 'POST') return createBoard(env, await body(request), actor, notify);
+
+  if (path === '/api/events' && method === 'GET') return eventsData(env, ctx, url);
+  if (path === '/api/push/key' && method === 'GET') return json({ key: (await vapidKeys(env)).publicKeyText });
+  if (path === '/api/push/subscribe' && method === 'POST') return subscribePush(env, await body(request));
+  if (path === '/api/push/unsubscribe' && method === 'POST') return unsubscribePush(env, await body(request));
   const mb = path.match(/^\/api\/boards\/([\w-]+)$/);
   if (mb && method === 'PATCH') return renameBoard(env, mb[1], await body(request));
   if (mb && method === 'DELETE') return deleteBoard(env, mb[1]);
@@ -135,7 +168,7 @@ async function route(request, env, ctx) {
     const action = m[3];
     if (action === 'photo' && method === 'GET') return getPhoto(env, id, url.searchParams.get('v'));
     if (action === 'photo' && method === 'POST') return savePhoto(env, id, request);
-    if (action === 'vote' && method === 'POST') return vote(env, id, await body(request));
+    if (action === 'vote' && method === 'POST') return vote(env, id, await body(request), notify);
     if (action === 'refresh' && method === 'POST') return json({ card: await refreshCard(env, id) });
     if (!action && method === 'PATCH') return editCard(env, id, await body(request));
     if (!action && method === 'DELETE') return deleteCard(env, id);
@@ -179,13 +212,20 @@ async function boardsData(env) {
   return results;
 }
 
-async function createBoard(env, input) {
+async function createBoard(env, input, actor = null, notify = () => {}) {
   const name = boardName(input.name);
   // Сайт сам придумывает адрес новой подборки, чтобы сразу на неё переключиться, не дожидаясь ответа
   const wanted = typeof input.id === 'string' && /^[\w-]{6,40}$/.test(input.id) && input.id !== 'main' ? input.id : null;
   const id = wanted || crypto.randomUUID().replace(/-/g, '').slice(0, 10);
-  const r = await env.DB.prepare('INSERT OR IGNORE INTO boards (id, name, created_at) VALUES (?, ?, ?)').bind(id, name, Date.now()).run();
+  const now = Date.now();
+  const [r, ev] = await env.DB.batch([
+    env.DB.prepare('INSERT OR IGNORE INTO boards (id, name, created_at) VALUES (?, ?, ?)').bind(id, name, now),
+    env.DB.prepare(`INSERT INTO events (board, kind, actor, card_id, title, created_at)
+      SELECT id, 'board', ?, NULL, name, created_at FROM boards WHERE id = ? AND created_at = ? AND name = ?
+      RETURNING ${EVENT_COLS}`).bind(actor, id, now, name),
+  ]);
   if (!r.meta?.changes) throw new HttpError(409, 'Такая подборка уже есть');
+  notify(ev.results);
   return json({ board: { id, name, count: 0, total: 0 } }, 201);
 }
 
@@ -269,7 +309,7 @@ async function getPhoto(env, id, version) {
   } });
 }
 
-async function addCard(env, input, fromBrowser = false) {
+async function addCard(env, input, fromBrowser = false, actor = null, notify = () => {}) {
   const b = board(input.board);
   const link = firstUrl(input.url);
   const imported = (fromBrowser || input.browserData != null) ? productFromBrowser(link, input.browserData) : null;
@@ -302,11 +342,20 @@ async function addCard(env, input, fromBrowser = false) {
       }
       continue;
     }
-    const result = await env.DB.prepare(
-      'INSERT INTO cards (id, board, source, product_id, url, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ' +
-      'ON CONFLICT (board, source, product_id) DO NOTHING'
-    ).bind(id, b, product.source, product.productId, product.url, JSON.stringify(product), now, now).run();
-    if (result.meta.changes) return json({ card: await getCard(env, id) }, 201);
+    // Карточка и событие «добавлен товар» — одним пакетом; событие пишется, только если карточка и правда вставилась
+    const [result, ev] = await env.DB.batch([
+      env.DB.prepare(
+        'INSERT INTO cards (id, board, source, product_id, url, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ' +
+        'ON CONFLICT (board, source, product_id) DO NOTHING'
+      ).bind(id, b, product.source, product.productId, product.url, JSON.stringify(product), now, now),
+      env.DB.prepare(`INSERT INTO events (board, kind, actor, card_id, title, created_at)
+        SELECT board, 'add', ?, id, ${CARD_TITLE}, created_at FROM cards c WHERE id = ? AND created_at = ?
+        RETURNING ${EVENT_COLS}`).bind(actor, id, now),
+    ]);
+    if (result.meta.changes) {
+      notify(ev.results);
+      return json({ card: await getCard(env, id) }, 201);
+    }
   }
   throw new HttpError(409, 'Карточка обновляется. Повторите добавление.');
 }
@@ -473,7 +522,7 @@ async function deleteCards(env, input) {
 /* ------------------------------- Лайки ------------------------------- */
 // Пользователей двое: парень (m) и девушка (f). Каждый ставит/снимает своё сердце.
 
-async function vote(env, id, input) {
+async function vote(env, id, input, notify = () => {}) {
   const kind = input.kind === 'f' ? 'f' : input.kind === 'm' ? 'm' : null;
   if (!kind) throw new HttpError(400, 'Нужно указать, кто голосует: m или f');
   const exists = await env.DB.prepare('SELECT 1 FROM cards WHERE id = ?').bind(id).first();
@@ -481,10 +530,27 @@ async function vote(env, id, input) {
 
   const had = await env.DB.prepare('SELECT 1 FROM votes WHERE card_id = ? AND kind = ?').bind(id, kind).first();
   const want = typeof input.value === 'boolean' ? input.value : !had;
-  if (want && !had)
-    await env.DB.prepare('INSERT OR IGNORE INTO votes (card_id, voter, kind, created_at) VALUES (?, ?, ?, ?)')
-      .bind(id, kind, kind, Date.now())
-      .run();
+  if (want && !had) {
+    // Лайк, а если второй уже лайкнул — ещё и совпадение. Всё одним пакетом (транзакцией): события пишутся,
+    // только если своего лайка до этого не было. Повторный лайк того же товара в течение 10 минут
+    // (сняли и снова поставили) нового уведомления не даёт.
+    const now = Date.now();
+    const other = kind === 'm' ? 'f' : 'm';
+    const fresh = `NOT EXISTS (SELECT 1 FROM votes WHERE card_id = ?1 AND kind = ?2)`;
+    const [like, match] = await env.DB.batch([
+      env.DB.prepare(`INSERT INTO events (board, kind, actor, card_id, title, created_at)
+        SELECT board, 'like', ?2, id, ${CARD_TITLE}, ?3 FROM cards c WHERE id = ?1 AND ${fresh}
+          AND NOT EXISTS (SELECT 1 FROM events WHERE card_id = ?1 AND kind = 'like' AND actor = ?2 AND created_at > ?4)
+        RETURNING ${EVENT_COLS}`).bind(id, kind, now, now - EVENT_REPEAT_MS),
+      env.DB.prepare(`INSERT INTO events (board, kind, actor, card_id, title, created_at)
+        SELECT board, 'match', ?2, id, ${CARD_TITLE}, ?3 FROM cards c WHERE id = ?1 AND ${fresh}
+          AND EXISTS (SELECT 1 FROM votes WHERE card_id = ?1 AND kind = ?5)
+          AND NOT EXISTS (SELECT 1 FROM events WHERE card_id = ?1 AND kind = 'match' AND created_at > ?4)
+        RETURNING ${EVENT_COLS}`).bind(id, kind, now, now - EVENT_REPEAT_MS, other),
+      env.DB.prepare('INSERT OR IGNORE INTO votes (card_id, voter, kind, created_at) VALUES (?, ?, ?, ?)').bind(id, kind, kind, now),
+    ]);
+    notify([...like.results, ...match.results]);
+  }
   if (!want && had) await env.DB.prepare('DELETE FROM votes WHERE card_id = ? AND kind = ?').bind(id, kind).run();
 
   return json({ likes: (await likesFor(env, [id]))[id] || { m: false, f: false } });
@@ -523,4 +589,89 @@ function present(row, likes) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+/* ---------------------------- Уведомления ---------------------------- */
+// События читают приложение для Android (в фоне раз в 15 минут) и сайт; браузерам с подпиской
+// Web Push сервер отправляет их сразу. Своё действие человеку не приходит: у события есть actor.
+
+const EVENT_COLS = 'id, board, kind, actor, card_id, title, created_at';
+const CARD_TITLE = `COALESCE(json_extract(c.overrides, '$.title'), json_extract(c.data, '$.title'))`;
+const EVENT_REPEAT_MS = 10 * 60 * 1000;
+const EVENT_KEEP_MS = 14 * 24 * 60 * 60 * 1000;
+const EVENT_KINDS = { like: 'likes', match: 'matches', add: 'adds', board: 'boards' };
+
+const presentEvent = (e, names = {}) => ({
+  id: e.id, kind: e.kind, actor: e.actor || null, board: e.board, boardName: e.board_name ?? names[e.board] ?? null,
+  cardId: e.card_id || null, title: e.title ? String(e.title).slice(0, 140) : null, createdAt: e.created_at,
+});
+
+// GET /api/events?since=<мс> → { now, events } — новые сверху, не больше 50
+async function eventsData(env, ctx, url) {
+  const now = Date.now();
+  const since = Math.max(0, Number(url.searchParams.get('since')) || 0, now - EVENT_KEEP_MS);
+  const { results } = await env.DB.prepare(
+    `SELECT e.*, b.name AS board_name FROM events e LEFT JOIN boards b ON b.id = e.board
+     WHERE e.created_at >= ? ORDER BY e.id DESC LIMIT 50`
+  ).bind(since).all();
+  // Старые события убираем между делом, не на каждом запросе
+  if (Math.random() < 0.1) ctx.waitUntil(env.DB.prepare('DELETE FROM events WHERE created_at < ?').bind(now - EVENT_KEEP_MS).run());
+  return json({ now, events: results.map((e) => presentEvent(e)) });
+}
+
+function pushSettings(input) {
+  const s = input && typeof input === 'object' ? input : {};
+  return JSON.stringify(Object.fromEntries(Object.values(EVENT_KINDS).map((k) => [k, s[k] !== false])));
+}
+
+async function subscribePush(env, input) {
+  const sub = input.subscription || {};
+  const p256dh = sub.keys?.p256dh;
+  const auth = sub.keys?.auth;
+  if (!checkEndpoint(sub.endpoint, env)) throw new HttpError(400, 'Неизвестный адрес push-сервиса');
+  if (!/^[\w-]{80,100}$/.test(p256dh || '') || !/^[\w-]{16,32}$/.test(auth || '')) throw new HttpError(400, 'Неверные ключи подписки');
+  const role = ['m', 'f'].includes(input.role) ? input.role : null;
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO push_subs (endpoint, p256dh, auth, role, settings, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, role = excluded.role,
+       settings = excluded.settings, updated_at = excluded.updated_at`
+  ).bind(sub.endpoint, p256dh, auth, role, pushSettings(input.settings), now, now).run();
+  return json({ ok: true });
+}
+
+async function unsubscribePush(env, input) {
+  if (typeof input.endpoint !== 'string') throw new HttpError(400, 'Нужен адрес подписки');
+  await env.DB.prepare('DELETE FROM push_subs WHERE endpoint = ?').bind(input.endpoint).run();
+  return json({ ok: true });
+}
+
+// Рассылка новых событий подписанным браузерам. Человеку не приходят его собственные действия,
+// а если вместе с лайком случилось совпадение — только совпадение.
+async function pushEvents(env, rows, origin) {
+  try {
+    const { results: subs } = await env.DB.prepare('SELECT * FROM push_subs').all();
+    if (!subs.length) return;
+    const boardIds = [...new Set(rows.map((e) => e.board))];
+    const { results: names } = await env.DB.prepare(
+      `SELECT id, name FROM boards WHERE id IN (${boardIds.map(() => '?').join(',')})`
+    ).bind(...boardIds).all();
+    const nameOf = Object.fromEntries(names.map((b) => [b.id, b.name]));
+    const matched = new Set(rows.filter((e) => e.kind === 'match').map((e) => e.card_id));
+    const events = rows
+      .filter((e) => !(e.kind === 'like' && matched.has(e.card_id)))
+      .map((e) => presentEvent(e, nameOf));
+    await Promise.allSettled(subs.map(async (sub) => {
+      const settings = JSON.parse(sub.settings || '{}');
+      const mine = events.filter((e) => (!e.actor || e.actor !== sub.role) && settings[EVENT_KINDS[e.kind]] !== false);
+      if (!mine.length) return;
+      const status = await sendPush(env, sub, { events: mine.slice(0, 10) }, origin);
+      // Подписка больше не действует (браузер отписался или удалён) — забываем её
+      if (status === 404 || status === 410) {
+        await env.DB.prepare('DELETE FROM push_subs WHERE endpoint = ?').bind(sub.endpoint).run();
+      }
+    }));
+  } catch (e) {
+    console.error('push events', e);
+  }
 }
