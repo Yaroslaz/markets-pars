@@ -593,6 +593,11 @@ textarea:focus, .field input:focus { border-color: color-mix(in srgb, var(--text
 .server-row .go { width: 18px; height: 18px; color: var(--muted); flex: none; }
 .notify-row .ic { color: var(--f); }
 .notify-row .hint[data-status="off"] .dot { background: var(--muted); }
+/* «Сеть» (приложение для Android): режим обхода, состояние и итог проверки связи */
+.net-row .ic { color: var(--m); }
+.net-switch button { padding: 11px 4px; font-size: 13px; }
+#netStatus[data-status="err"] { color: var(--danger); }
+.net-results li .u { color: var(--text); }
 
 /* ---------- Уведомления ---------- */
 .tgl-group { border: 0; margin: 0; padding: 0; min-width: 0; border-radius: 14px; background: var(--surface-2); display: flex; flex-direction: column; }

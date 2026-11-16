@@ -1478,6 +1478,7 @@ function openSettings() {
   setTimeout(previewFonts, 400);
   markServer();
   markNotify();
+  loadNet();
   openDialog(settingsDialog);
 }
 
@@ -1952,6 +1953,109 @@ async function removeBoard(id) {
   } catch (e) {
     toast(e.message);
   }
+}
+
+/* ================================ Сеть ================================ */
+
+// Только в приложении для Android. Обход блокировок: AliExpress, его картинки и сервер подборок приложение
+// пропускает через свой прокси, который разрезает начало TLS-соединения, — так провайдер не видит адрес сайта
+// и не обрывает загрузку. «Проверка связи» открывает магазины и сервер напрямую и через обход; отчёт можно
+// скопировать и прислать в чат.
+const netDialog = $('#netDialog');
+const NET_MODES = { auto: 'авто', always: 'всегда', off: 'выключен' };
+const net = { status: null, report: '', items: null, checking: false };
+
+// Состояние обхода от приложения (mode — сменить режим). null — приложение про обход не знает (старая версия).
+async function loadNet(mode) {
+  if (!nativeApp || !IS_ANDROID) return null;
+  const r = await nativeApp.ask(mode ? { type: 'bypass', mode } : { type: 'bypass' }, 3000);
+  if (r?.ok) net.status = r;
+  renderNet();
+  return r?.ok ? r : null;
+}
+
+function netStatus() {
+  const s = net.status;
+  if (!s.supported && s.mode !== 'off') return ['err', 'Встроенный браузер телефона не умеет работать через прокси — обновите «Android System WebView» в Google Play.'];
+  if (s.scope === 'error') return ['err', 'Не удалось запустить обход. Перезапустите приложение.'];
+  if (s.mode === 'off') return ['off', 'Страницы магазинов и сервер открываются напрямую.'];
+  if (s.mode === 'always') return ['ok', 'Всё, что открывает приложение, идёт через обход.'];
+  return ['ok', s.scope === 'hosts'
+    ? 'Через обход идут AliExpress, его картинки и сервер подборок, остальное — напрямую.'
+    : 'Через обход идёт всё, кроме Ozon, Маркета и Wildberries.'];
+}
+
+function renderNet() {
+  const s = net.status;
+  $('#netRow').hidden = !s;
+  if (!s) return;
+  const [status, text] = netStatus();
+  const hint = $('#netHint');
+  hint.dataset.status = status;
+  $('.v', hint).textContent = status === 'err' ? 'обход недоступен' : 'обход: ' + NET_MODES[s.mode];
+  if (!netDialog.open) return;
+  $$('#netSwitch [data-net-mode]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.netMode === s.mode);
+    b.setAttribute('aria-checked', String(b.dataset.netMode === s.mode));
+  });
+  const line = $('#netStatus');
+  line.dataset.status = status;
+  line.textContent = text;
+  const btn = $('#netCheck');
+  btn.disabled = net.checking;
+  $('span', btn).textContent = net.checking ? 'Проверяю… до минуты' : 'Проверка связи';
+  const list = $('#netResults');
+  list.hidden = !net.items;
+  list.innerHTML = (net.items || [])
+    .map((i) => {
+      const [cls, st] = !i.direct && !i.bypass ? ['err', 'не открывается']
+        : !i.direct ? ['ok', i.added ? 'только через обход, добавлен' : 'только через обход']
+        : ['ok', i.bypass ? 'напрямую ✓ · обход ✓' : 'напрямую ✓ · обход ✗'];
+      return `<li class="${cls}"><span class="u">${esc(i.name)}</span><span class="st">${st}</span></li>`;
+    })
+    .join('');
+  $('#netReportRow').hidden = !net.report;
+}
+
+function openNet() {
+  openDialog(netDialog);
+  renderNet();
+  loadNet();
+}
+
+async function setNetMode(mode) {
+  if (!net.status || net.status.mode === mode) return;
+  net.status = { ...net.status, mode };
+  renderNet();
+  if (!(await loadNet(mode))) toast('Приложение не ответило');
+}
+
+async function checkNet() {
+  if (net.checking || !nativeApp) return;
+  Object.assign(net, { checking: true, items: null, report: '' });
+  renderNet();
+  const r = await nativeApp.ask({ type: 'bypass-check', api: state.api }, 120000);
+  net.checking = false;
+  if (r?.ok) {
+    net.report = r.report || '';
+    net.items = r.items || [];
+    // Проверка могла добавить адреса в список обхода
+    if (net.items.some((i) => i.added)) loadNet();
+  } else toast('Проверка не удалась');
+  renderNet();
+}
+
+async function copyNetReport() {
+  if (!net.report) return;
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(net.report);
+    ok = true;
+  } catch {
+    // WebView может не дать странице писать в буфер — тогда копирует приложение
+    ok = !!(await nativeApp?.ask({ type: 'bypass-copy', text: net.report }))?.ok;
+  }
+  toast(ok ? 'Отчёт скопирован — вставьте его в чат' : 'Не удалось скопировать');
 }
 
 /* ================================ Тема ================================ */
@@ -3075,6 +3179,8 @@ function bind() {
     if (themeBtn) return setTheme(themeBtn.dataset.themeKey);
     const fontBtn = e.target.closest('.font-switch [data-font]');
     if (fontBtn) return setFont(fontBtn.dataset.font);
+    const netBtn = e.target.closest('[data-net-mode]');
+    if (netBtn) return setNetMode(netBtn.dataset.netMode);
     const role = e.target.closest('[data-role]');
     if (role) {
       setRole(role.dataset.role);
@@ -3126,6 +3232,12 @@ function bind() {
         return openNotify();
       case 'notify-allow':
         return allowNotify();
+      case 'net':
+        return openNet();
+      case 'net-check':
+        return checkNet();
+      case 'net-copy':
+        return copyNetReport();
       case 'notify-os-settings':
         return nativeApp?.ask({ type: 'notify-settings' }, 500);
       case 'close-dialog':
@@ -3268,7 +3380,7 @@ function bind() {
   viewer.addEventListener('click', (e) => e.target === viewer && closeViewer());
   notifyForm.addEventListener('change', (e) => onNotifyChange(e.target));
   notifyForm.addEventListener('submit', (e) => e.preventDefault());
-  for (const d of [addDialog, editDialog, settingsDialog, serverDialog, notifyDialog, $('#shareDialog'), $('#boardsDialog'), moveDialog, confirmBox])
+  for (const d of [addDialog, editDialog, settingsDialog, serverDialog, notifyDialog, netDialog, $('#shareDialog'), $('#boardsDialog'), moveDialog, confirmBox])
     d.addEventListener('click', (e) => e.target === d && d.close());
   // Окно закрылось чем угодно (✕, Escape, тап мимо, отправка формы) — убираем его слой из истории «Назад»
   // Событие close приходит асинхронно: если окно уже открыли снова (пока оно уходило), его слой не трогаем
