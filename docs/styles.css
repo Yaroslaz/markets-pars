@@ -233,6 +233,11 @@ main { padding: 0 calc(var(--safe-r) + 10px) calc(var(--dock-h) + var(--safe-b) 
 .meta .src { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; white-space: nowrap; }
 .card .meta { white-space: nowrap; overflow: hidden; }
 .card .meta > span:not(.rate) { overflow: hidden; text-overflow: ellipsis; }
+/* «Все подборки»: в какой подборке товар */
+/* Сначала сокращается число отзывов, подпись подборки — не уже половины строки */
+.meta .bd { display: block; flex-shrink: 0; margin-left: auto; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta .bd:only-child { max-width: 100%; }
+.meta .bd svg { width: 12px; height: 12px; margin-right: 3px; vertical-align: -1.5px; }
 
 .votes { display: flex; gap: 6px; margin-top: auto; padding-top: 6px; }
 .vote {
@@ -807,6 +812,7 @@ body.selecting .dock-row { display: none; }
 .board-row .plus { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; background: var(--surface-2); flex: none; }
 .board-row .plus svg { width: 18px; height: 18px; }
 #moveList:empty { display: none; }
+.board-row.all .plus { background: var(--surface); }
 
 /* =====================================================================
    Подтверждение

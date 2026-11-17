@@ -2,7 +2,7 @@ import { parseProduct, resolveLink, productFromBrowser, mergeBrowserProduct, ext
 import { accessConfig, requireSession, signIn } from './access.js';
 import { vapidKeys, sendPush, checkEndpoint } from './push.js';
 
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 const STALE_MS = 6 * 60 * 60 * 1000; // через сколько обновлять цену/рейтинг в фоне
 const MAX_PHOTO_BYTES = 512 * 1024;
 // Лайки берём тем же запросом, что и карточки, — один поход в базу вместо нескольких
@@ -249,11 +249,14 @@ async function deleteBoard(env, id) {
 
 /* ------------------------------ Карточки ------------------------------ */
 
+// board=* — товары всех подборок сразу (вкладка «Все подборки» на сайте)
 async function cardsData(env, ctx, url) {
-  const b = board(url.searchParams.get('board'));
-  const { results: rows } = await env.DB.prepare(CARD_SELECT + ' WHERE c.board = ? ORDER BY c.created_at DESC LIMIT 500')
-    .bind(b)
-    .all();
+  const all = url.searchParams.get('board') === '*';
+  const b = all ? '*' : board(url.searchParams.get('board'));
+  const { results: rows } = await (all
+    ? env.DB.prepare(CARD_SELECT + ' ORDER BY c.created_at DESC LIMIT 2000')
+    : env.DB.prepare(CARD_SELECT + ' WHERE c.board = ? ORDER BY c.created_at DESC LIMIT 500').bind(b)
+  ).all();
   const likes = {};
   const now = Date.now();
 
@@ -589,6 +592,7 @@ function present(row, likes) {
   return {
     id: row.id,
     ...card,
+    board: row.board,
     edited: Object.keys(overrides),
     likes: typeof row.liked === 'string' || row.liked === null
       ? { m: /(^|,)m(,|$)/.test(row.liked || ''), f: /(^|,)f(,|$)/.test(row.liked || '') }
