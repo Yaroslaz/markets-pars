@@ -22,6 +22,9 @@ const IS_ANDROID = /Android/i.test(UA);
 const IS_IOS = /iPhone|iPad|iPod/i.test(UA) || (/Macintosh/.test(UA) && navigator.maxTouchPoints > 1);
 const IS_MOBILE = IS_ANDROID || IS_IOS;
 const POLL_MS = 20000;
+// «Все подборки»: товары из всех подборок на одном экране
+const ALL = '*';
+const isAll = () => state.board === ALL;
 
 // Лёгкая отдача вибрацией; до первого касания страницы браузер её запрещает — тогда молчим
 const buzz = (pattern) => navigator.userActivation?.hasBeenActive !== false && navigator.vibrate?.(pattern);
@@ -73,7 +76,7 @@ function initState() {
   const defaultApi = normalizeApi(CFG.apiUrl);
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
   if (apiQ && (!defaultApi || local)) store.set('api_override', normalizeApi(apiQ));
-  if (boardQ && /^[\w-]{1,40}$/.test(boardQ)) store.set('board', boardQ);
+  if (boardQ && (boardQ === ALL || /^[\w-]{1,40}$/.test(boardQ))) store.set('board', boardQ);
   state.api = normalizeApi(store.get('api_override') || (defaultApi ? '' : store.get('api')) || defaultApi);
   state.accessToken = store.get('access:' + state.api, '');
   state.board = store.get('board') || 'main';
@@ -348,7 +351,7 @@ async function importViaApp(board, url, source, cardId) {
     // Всё прочитанное со страницы: цены, фото, оценка, описание, характеристики, варианты (сервер сам проверит поля)
     const { status, complete, url: pageUrl, ...browserData } = data;
     const res = await api('/api/cards/import', { method: 'POST', body: { board, url: data.url, browserData, cardId } });
-    if (res.removed && state.board === board) state.cards = state.cards.filter((c) => c.id !== res.removed);
+    if (res.removed && (state.board === board || isAll())) state.cards = state.cards.filter((c) => c.id !== res.removed);
     return res;
   } catch {
     return null;
@@ -446,7 +449,7 @@ async function loadCards({ silent = false } = {}) {
   }
   const board = state.board;
   try {
-    const data = await api(`/api/cards?board=${encodeURIComponent(board)}`, { etag: state.cards.length ? state.etag : '' });
+    const data = await fetchCards(board, state.cards.length ? state.etag : '');
     if (board !== state.board) return;
     if (data.notModified) {
       if (!state.loading) return; // ничего не изменилось — экран не трогаем
@@ -461,6 +464,23 @@ async function loadCards({ silent = false } = {}) {
   state.loading = false;
   render();
   if (state.openId) refreshViewer();
+}
+
+// Карточки подборки. Для «Все подборки» старый сервер (без board=*) отдаёт только основную —
+// тогда собираем товары каждой подборки отдельными запросами.
+async function fetchCards(board, etag = '') {
+  const data = await api(`/api/cards?board=${encodeURIComponent(board)}`, { etag });
+  if (board !== ALL || data.notModified || data.board === ALL) return data;
+  return { cards: await allCardsByBoard(), board: ALL };
+}
+
+async function allCardsByBoard() {
+  if (!state.boards.length) state.boards = (await api('/api/boards')).boards;
+  const parts = await Promise.all(state.boards.map(async (b) => {
+    const r = await api(`/api/cards?board=${encodeURIComponent(b.id)}`);
+    return r.cards.map((c) => ({ ...c, board: b.id }));
+  }));
+  return parts.flat();
 }
 
 /* ============================== Форматы =============================== */
@@ -509,7 +529,7 @@ function priceHtml(c) {
   }</div>`;
 }
 
-function metaHtml(c, withSource = true) {
+function metaHtml(c, withSource = true, withBoard = false) {
   const rating =
     c.rating != null
       ? `<span class="rate"><svg><use href="#i-star"/></svg>${String(c.rating).replace('.', ',')}</span>${
@@ -519,7 +539,8 @@ function metaHtml(c, withSource = true) {
         ? `<span>${reviewsText(c.reviews)}</span>`
         : '';
   const src = withSource ? `<span class="src">${fav(c.source)}${SOURCES[c.source].name}</span>` : '';
-  return rating || src ? `<div class="meta">${rating}${src}</div>` : '';
+  const bd = withBoard && c.board ? `<span class="bd" title="Подборка «${esc(boardTitle(c.board))}»"><svg><use href="#i-stack"/></svg>${esc(boardTitle(c.board))}</span>` : '';
+  return rating || src || bd ? `<div class="meta">${rating}${src}${bd}</div>` : '';
 }
 
 // Варианты, описание, характеристики и отзывы — то, что прочитали со страницы магазина
@@ -620,7 +641,7 @@ function cardHtml(c) {
     <div class="body">
       ${priceHtml(c)}
       <h3 class="title">${esc(c.title)}</h3>
-      ${metaHtml(c, false)}
+      ${metaHtml(c, false, isAll())}
       ${votesHtml(c)}
     </div>
   </article>`;
@@ -698,7 +719,8 @@ function renderGrid() {
   for (const [id, el] of existing) if (!ids.has(id)) (el.remove(), cardSig.delete(id));
   let prev = null;
   for (const c of list) {
-    const sig = JSON.stringify([c.title, c.price, c.oldPrice, c.priceNote, c.rating, c.reviews, c.thumbs?.[0], c.images?.length, c.likes, state.role, c.edited]);
+    const sig = JSON.stringify([c.title, c.price, c.oldPrice, c.priceNote, c.rating, c.reviews, c.thumbs?.[0], c.images?.length, c.likes, state.role, c.edited,
+      isAll() && c.board ? boardTitle(c.board) : '']);
     let el = existing.get(c.id);
     if (!el || cardSig.get(c.id) !== sig) {
       const tmp = document.createElement('div');
@@ -813,7 +835,7 @@ async function refreshCards(ids, { onlyMissing = false } = {}) {
     if (c) {
       const viaApp = !!nativeApp && nativeSources.has(c.source);
       try {
-        const viaPhone = await importViaApp(board, c.url, c.source, id);
+        const viaPhone = await importViaApp(c.board || board, c.url, c.source, id);
         // «Отмена» на странице магазина останавливает всё обновление, а не только этот товар
         if (viaPhone?.cancelled) {
           run.stop = true;
@@ -984,7 +1006,8 @@ function updateParseInfo() {
   if (!addText.value.trim()) info.textContent = '';
   else if (!links.length) info.textContent = 'Ссылок на товары не нашёл';
   else
-    info.innerHTML = `Найдено <b>${links.length}</b>${ignored ? ` · пропущу ${ignored} ${plural(ignored, 'чужую ссылку', 'чужие ссылки', 'чужих ссылок')}` : ''}`;
+    info.innerHTML = `Найдено <b>${links.length}</b>${ignored ? ` · пропущу ${ignored} ${plural(ignored, 'чужую ссылку', 'чужие ссылки', 'чужих ссылок')}` : ''}${
+      isAll() ? ` · добавлю в «${esc(boardTitle(addTarget()))}»` : ''}`;
   $('#addForm [type=submit] span').textContent = links.length > 1 ? `Добавить ${links.length}` : 'Добавить';
 }
 
@@ -1017,7 +1040,8 @@ async function addLinks(text) {
     .join('');
   submit.disabled = true;
   const rows = [...list.children];
-  const board = state.board;
+  const board = addTarget();
+  const shown = state.board;
   let added = 0, dups = 0, failed = 0;
 
   // 3 запроса параллельно — сервер парсит по одной ссылке за раз
@@ -1031,7 +1055,7 @@ async function addLinks(text) {
         const viaApp = await importViaApp(board, url, source);
         const r = viaApp?.card ? viaApp
           : await api('/api/cards', { method: 'POST', body: { board, url: viaApp?.resolved || url, shareText } });
-        if (state.board === board) upsertCard(r.card);
+        if (state.board === shown) upsertCard({ ...r.card, board: r.card.board || board });
         if (r.duplicate) dups++;
         else added++;
         li.className = r.duplicate ? 'dup' : 'ok';
@@ -1053,7 +1077,8 @@ async function addLinks(text) {
   if (added) parts.push(`добавлено ${added}`);
   if (dups) parts.push(`уже были ${dups}`);
   if (failed) parts.push(`ошибок ${failed}`);
-  toast(parts.join(', ').replace(/^./, (s) => s.toUpperCase()));
+  const where = shown === ALL && (added || dups) ? ` — подборка «${boardTitle(board)}»` : '';
+  toast(parts.join(', ').replace(/^./, (s) => s.toUpperCase()) + where);
   if (failed && addDialog.open && addText.value === text) {
     $('#parseInfo').textContent = 'Не все ссылки добавились — причина в списке ниже.';
   } else if (!failed && addText.value === text) {
@@ -1065,6 +1090,7 @@ async function addLinks(text) {
 function upsertCard(card) {
   card = withUploadedPhoto(card);
   const i = state.cards.findIndex((c) => c.id === card.id);
+  if (i >= 0 && !card.board && state.cards[i].board) card.board = state.cards[i].board;
   if (i >= 0) state.cards[i] = card;
   else state.cards.unshift(card);
 }
@@ -1211,7 +1237,7 @@ function refreshViewer(full = false) {
     if (viewer.open) closeViewer();
     return;
   }
-  const sig = JSON.stringify([c.images, c.title, c.price, c.oldPrice, c.rating, c.reviews, c.updatedAt, c.edited]);
+  const sig = JSON.stringify([c.images, c.title, c.price, c.oldPrice, c.rating, c.reviews, c.updatedAt, c.edited, isAll() && c.board ? boardTitle(c.board) : '']);
   if (!full && body.dataset.sig === sig && body.dataset.id === c.id) {
     // меняются только голоса — не трогаем галерею
     $('.votes', body).outerHTML = votesHtml(c);
@@ -1275,7 +1301,7 @@ function refreshViewer(full = false) {
         <button type="button" class="icon-btn share" data-action="share-card" aria-label="Поделиться" title="Поделиться"><svg><use href="#i-share"/></svg></button>
       </div>
       ${detailsHtml(c)}
-      <div class="updated">${c.priceNote ? `Цена ${esc(c.priceNote)} · ` : ''}обновлено ${ago(c.updatedAt)}</div>
+      <div class="updated">${isAll() && c.board ? `Подборка «${esc(boardTitle(c.board))}» · ` : ''}${c.priceNote ? `Цена ${esc(c.priceNote)} · ` : ''}обновлено ${ago(c.updatedAt)}</div>
     </div>`;
   // Фото те же — меняем только описание: галерея не перерисовывается, фото не мигают и не грузятся заново
   if (sameCard && body.dataset.gsig === gsig && $('.gallery', body) && $('.info', body)) {
@@ -1326,7 +1352,7 @@ async function refreshCard(id) {
   toast('Обновляю…');
   try {
     const c = state.cards.find((x) => x.id === id);
-    const viaPhone = c && (await importViaApp(state.board, c.url, c.source, id));
+    const viaPhone = c && (await importViaApp(c.board || state.board, c.url, c.source, id));
     const r = viaPhone?.card ? viaPhone : await api(`/api/cards/${id}/refresh`, { method: 'POST', body: {} });
     upsertCard(r.card);
     render();
@@ -1793,7 +1819,7 @@ async function openFromNotice(board, cardId) {
   board = /^[\w-]{1,40}$/.test(board || '') ? board : null;
   cardId = /^[\w-]{1,40}$/.test(cardId || '') ? cardId : null;
   if (!state.unlocked || !state.api) return void (notice.pending = { board, cardId });
-  if (board && board !== state.board) await switchBoard(board, false);
+  if (board && board !== state.board && !isAll()) await switchBoard(board, false);
   else await loadCards({ silent: true });
   if (!cardId) return;
   if (!state.cards.some((c) => c.id === cardId)) return toast('Этого товара уже нет в подборке');
@@ -1812,10 +1838,17 @@ navigator.serviceWorker?.addEventListener('message', (e) => {
 
 const boardsDialog = $('#boardsDialog');
 const currentBoard = () => state.boards.find((b) => b.id === state.board);
+const boardTitle = (id) => state.boards.find((b) => b.id === id)?.name || (id === 'main' ? 'Основная' : id);
+
+// Куда добавлять ссылки: в открытую подборку, а в «Все подборки» — в последнюю открытую
+function addTarget() {
+  if (!isAll()) return state.board;
+  const last = store.get('last_board') || 'main';
+  return state.boards.some((b) => b.id === last) ? last : state.boards[0]?.id || 'main';
+}
 
 function renderBoardName() {
-  const b = currentBoard();
-  $('#boardName').textContent = b ? b.name : state.board === 'main' ? 'Основная' : state.board;
+  $('#boardName').textContent = isAll() ? 'Все подборки' : boardTitle(state.board);
 }
 
 async function loadBoards() {
@@ -1825,9 +1858,10 @@ async function loadBoards() {
     state.boards = r.boards;
     saveCache();
     // Подборки из ссылки ещё нет в списке (например, её удалили) — переходим на первую
-    if (!currentBoard() && state.boards.length && !state.cards.length) switchBoard(state.boards[0].id, false);
+    if (!isAll() && !currentBoard() && state.boards.length && !state.cards.length) switchBoard(state.boards[0].id, false);
   } catch {}
   renderBoardName();
+  if (isAll()) render(); // названия подборок на карточках
   if (boardsDialog.open) renderBoards();
   if (moveDialog.open) renderMoveList();
 }
@@ -1840,10 +1874,23 @@ function boardMeta(b) {
   return count ? `${count} ${plural(count, 'товар', 'товара', 'товаров')}${total ? ' · ' + rub(total) : ''}` : 'пусто';
 }
 
+function allMeta() {
+  const live = isAll() && !state.loading;
+  const count = live ? state.cards.length : state.boards.reduce((a, b) => a + (b.id === state.board && !state.loading ? state.cards.length : b.count || 0), 0);
+  const total = live ? state.cards.reduce((a, c) => a + (c.price || 0), 0) : state.boards.reduce((a, b) => a + (b.total || 0), 0);
+  return count ? `${count} ${plural(count, 'товар', 'товара', 'товаров')}${total ? ' · ' + rub(total) : ''}` : 'пусто';
+}
+
 function renderBoards() {
   const list = $('#boardsList');
   const many = state.boards.length > 1;
-  list.innerHTML = state.boards
+  // «Все подборки» — когда подборок больше одной (или этот вид уже открыт)
+  const all = many || isAll()
+    ? `<li class="board-row all ${isAll() ? 'current' : ''}" data-board="${ALL}">
+        <button type="button" class="board-pick" data-action="pick-board"><span class="plus"><svg><use href="#i-stack"/></svg></span><span class="txt"><span class="bn">Все подборки</span><span class="bm">${allMeta()}</span></span><svg class="ck"><use href="#i-check"/></svg></button>
+      </li>`
+    : '';
+  list.innerHTML = all + state.boards
     .map((b) => {
       return `<li class="board-row ${b.id === state.board ? 'current' : ''}" data-board="${esc(b.id)}">
         <button type="button" class="board-pick" data-action="pick-board"><span class="txt"><span class="bn">${esc(b.name)}</span><span class="bm">${boardMeta(b)}</span></span><svg class="ck"><use href="#i-check"/></svg></button>
@@ -1867,6 +1914,7 @@ function switchBoard(id, notify = true) {
   exitSelection();
   state.board = id;
   store.set('board', id === 'main' ? '' : id);
+  if (id !== ALL) store.set('last_board', id === 'main' ? '' : id);
   // Сразу показываем то, что помним об этой подборке, свежее подтянется следом
   const cached = readCache(id);
   state.cards = cached ? cached.cards : [];
@@ -1879,7 +1927,7 @@ function switchBoard(id, notify = true) {
   window.scrollTo({ top: 0 });
   renderBoardName();
   const loading = loadCards();
-  if (notify) toast(`Подборка «${currentBoard()?.name || id}»`);
+  if (notify) toast(id === ALL ? 'Все подборки' : `Подборка «${currentBoard()?.name || id}»`);
   return loading;
 }
 
@@ -1928,6 +1976,7 @@ async function saveRename(row) {
     b.name = name;
     renderBoards();
     renderBoardName();
+    if (isAll()) render();
   } catch (e) {
     toast(e.message);
   }
@@ -1948,6 +1997,11 @@ async function removeBoard(id) {
     await api(`/api/boards/${id}`, { method: 'DELETE' });
     state.boards = state.boards.filter((x) => x.id !== id);
     if (state.board === id) switchBoard(state.boards[0].id, false);
+    if (isAll()) {
+      state.cards = state.cards.filter((c) => c.board !== id);
+      if (state.boards.length < 2) switchBoard(state.boards[0].id, false);
+      else render();
+    }
     renderBoards();
     toast('Подборка удалена');
   } catch (e) {
@@ -2407,7 +2461,9 @@ function openMove() {
 }
 
 function renderMoveList() {
-  const others = state.boards.filter((b) => b.id !== state.board);
+  // В «Все подборки» прячем только ту подборку, в которой уже лежат все выбранные товары
+  const picked = [...state.selected].map((id) => state.cards.find((c) => c.id === id)?.board);
+  const others = state.boards.filter((b) => b.id !== state.board && !(isAll() && picked.every((x) => x === b.id)));
   $('#moveList').innerHTML =
     others
       .map((b) => `<li class="board-row" data-board="${esc(b.id)}">
@@ -2437,7 +2493,14 @@ async function moveSelected(target, name) {
     if (moveDialog.open) moveDialog.close();
     if (state.board !== from) return;
     exitSelection();
-    await dropCards(ids);
+    if (from === ALL) {
+      // Товары остаются на экране — меняется только их подборка; дубли сливаются с карточками в целевой
+      const gone = new Set((r.merged || []).map((m) => m.id));
+      if (gone.size) await dropCards([...gone]);
+      for (const c of state.cards) if (ids.includes(c.id) && !gone.has(c.id)) c.board = target;
+      render();
+      loadCards({ silent: true });
+    } else await dropCards(ids);
     const merged = r.merged?.length || 0;
     toast(`Перенесено в «${name}»: ${goodsText(ids.length)}${merged ? ` (${merged} уже ${merged === 1 ? 'был' : 'были'} там — лайки объединены)` : ''}`);
     loadBoards();
@@ -3465,7 +3528,9 @@ async function enterApp() {
       state.unlocked = true;
       if (!data.notModified && board === state.board) {
         state.boards = data.boards;
-        applyCards(data.cards, data._etag);
+        // Старый сервер не знает board=* — собираем товары всех подборок отдельными запросами
+        if (board === ALL && data.board !== ALL) applyCards(await allCardsByBoard(), '');
+        else applyCards(data.cards, data._etag);
         saveCache();
       }
     } catch (error) {
@@ -3492,7 +3557,7 @@ async function enterApp() {
   renderBoardName();
   render();
   if (!state.api) await loadCards();
-  else if (!currentBoard() && state.boards.length && !state.cards.length) switchBoard(state.boards[0].id, false);
+  else if (!isAll() && !currentBoard() && state.boards.length && !state.cards.length) switchBoard(state.boards[0].id, false);
 
   // Web Share Target (PWA на Android): «Поделиться» из приложения маркетплейса → сюда
   const qs = new URLSearchParams(location.search);
