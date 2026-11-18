@@ -7,7 +7,8 @@ const SOURCES = {
   ozon: { name: 'Ozon', pkg: 'ru.ozon.app.android' },
   wb: { name: 'Wildberries', pkg: 'com.wildberries.ru' },
   ym: { name: 'Яндекс Маркет', pkg: 'ru.beru.android' },
-  ali: { name: 'AliExpress', pkg: 'com.alibaba.aliexpresshd' },
+  // В России ставится AliExpress Россия (ru.aliexpress.buyer); международное приложение — запасное
+  ali: { name: 'AliExpress', pkg: 'ru.aliexpress.buyer', altPkgs: ['com.alibaba.aliexpresshd'] },
 };
 const fav = (k, cls = 'fav') => `<img class="${cls}" src="img/${k}.png" alt="" width="16" height="16">`;
 const SORTS = [
@@ -1220,12 +1221,15 @@ function closeViewer() {
   if (location.hash.startsWith('#card=')) history.replaceState(null, '', location.pathname + location.search);
 }
 
-function androidIntent(url, packageName) {
-  return `intent://${url.host}${url.pathname}${url.search}#Intent;scheme=https;package=${packageName};S.browser_fallback_url=${encodeURIComponent(url.href)};end`;
+// alt — запасные пакеты того же магазина: их перебирает наше приложение для Android, Chrome их не знает
+function androidIntent(url, packageName, alt = []) {
+  const extra = alt.length ? `S.alt_packages=${encodeURIComponent(alt.join(','))};` : '';
+  return `intent://${url.host}${url.pathname}${url.search}#Intent;scheme=https;package=${packageName};${extra}S.browser_fallback_url=${encodeURIComponent(url.href)};end`;
 }
 
 function appHref(c) {
-  if (IS_ANDROID) return androidIntent(new URL(c.url), SOURCES[c.source].pkg);
+  const src = SOURCES[c.source];
+  if (IS_ANDROID) return androidIntent(new URL(c.url), src.pkg, src.altPkgs);
   // iOS: универсальная ссылка откроет приложение, если оно установлено
   return c.url;
 }
