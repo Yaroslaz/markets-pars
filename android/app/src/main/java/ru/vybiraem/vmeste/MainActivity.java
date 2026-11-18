@@ -332,16 +332,42 @@ public class MainActivity extends Activity {
     private void openOutside(Uri url) {
         String scheme = url.getScheme();
         if (scheme == null) return;
+        Intent intent;
         try {
-            Intent intent = "intent".equals(scheme)
+            intent = "intent".equals(scheme)
                     ? Intent.parseUri(url.toString(), Intent.URI_INTENT_SCHEME)
                     : new Intent(Intent.ACTION_VIEW, url);
-            intent.addCategory(Intent.CATEGORY_BROWSABLE);
-            intent.setComponent(null);
-            intent.setSelector(null);
-            startActivity(intent);
         } catch (Exception e) {
             Toast.makeText(this, R.string.no_app, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        intent.addCategory(Intent.CATEGORY_BROWSABLE);
+        intent.setComponent(null);
+        intent.setSelector(null);
+        if (tryStart(intent)) return;
+
+        // У магазина бывает несколько приложений (AliExpress Россия и международное) — пробуем запасные
+        String alt = intent.getStringExtra("alt_packages");
+        if (intent.getPackage() != null && alt != null) {
+            for (String pkg : alt.split(",")) {
+                if (!pkg.trim().isEmpty() && tryStart(new Intent(intent).setPackage(pkg.trim()))) return;
+            }
+        }
+        // Приложения магазина нет — открываем страницу товара в браузере, как это сделал бы Chrome
+        String fallback = intent.getStringExtra("browser_fallback_url");
+        if (fallback != null && (fallback.startsWith("https://") || fallback.startsWith("http://"))
+                && tryStart(new Intent(Intent.ACTION_VIEW, Uri.parse(fallback)).addCategory(Intent.CATEGORY_BROWSABLE))) {
+            return;
+        }
+        Toast.makeText(this, R.string.no_app, Toast.LENGTH_SHORT).show();
+    }
+
+    private boolean tryStart(Intent intent) {
+        try {
+            startActivity(intent);
+            return true;
+        } catch (ActivityNotFoundException | SecurityException e) {
+            return false;
         }
     }
 
